@@ -5,6 +5,9 @@ import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from io import BytesIO
+import base64
+from PIL import Image
+import io
 
 st.set_page_config(page_title="PCA Analysis App", layout="wide")
 
@@ -53,7 +56,7 @@ def main():
             combined_df = combined_df[mask]
             st.success(f"{len(combined_df)} players found for selected positions.")
 
-    # 3️⃣ Filter by Age (new section)
+    # 3️⃣ Filter by Age
     st.header("3️⃣ Filter by Age Range")
     if "Age" in combined_df.columns:
         min_age = int(combined_df["Age"].min())
@@ -73,7 +76,7 @@ def main():
     else:
         st.warning("No 'Age' column found in the data. Age filter will be skipped.")
 
-    # 4️⃣ Filter by Minutes (renumbered from original 3️⃣)
+    # 4️⃣ Filter by Minutes
     st.header("4️⃣ Filter by Minimum Minutes Played")
     minute_cols = [col for col in combined_df.columns if 'min' in col.lower() or 'minutes' in col.lower()]
     if minute_cols:
@@ -88,7 +91,7 @@ def main():
         combined_df = combined_df[combined_df[minute_col] >= min_minutes]
         st.success(f"{len(combined_df)} players with at least {min_minutes} minutes.")
 
-    # 5️⃣ Highlight Players (renumbered from original 4️⃣)
+    # 5️⃣ Highlight Players
     st.header("5️⃣ Highlight Players")
     if "Player" in combined_df.columns:
         player_names = combined_df["Player"].dropna().unique().tolist()
@@ -100,7 +103,7 @@ def main():
     else:
         highlighted_players = []
 
-    # 6️⃣ Select Metrics (renumbered from original 5️⃣)
+    # 6️⃣ Select Metrics
     st.header("6️⃣ Select Metrics (Numeric Columns)")
     numeric_cols = combined_df.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
@@ -127,7 +130,7 @@ def main():
         st.warning("No valid data left after filters.")
         st.stop()
 
-    # 7️⃣ Run PCA (renumbered from original 6️⃣)
+    # 7️⃣ Run PCA
     X = df_clean[selected_metrics].values
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -137,7 +140,7 @@ def main():
     df_clean["PCA1"] = coords[:, 0]
     df_clean["PCA2"] = coords[:, 1]
 
-    # 8️⃣ Plot (renumbered from original 7️⃣)
+    # 8️⃣ Plot
     st.header("7️⃣ PCA Plot")
 
     fig = go.Figure()
@@ -189,18 +192,22 @@ def main():
                 axis=1
             )
 
-            fig.add_trace(go.Scatter(
-                x=highlighted["PCA1"],
-                y=highlighted["PCA2"],
-                mode="markers+text",
-                marker=dict(size=12, color=color, symbol="diamond", line=dict(width=2, color="black")),
-                text=highlighted["Player"],
-                textposition="bottom center",
-                name="Highlighted",
-                hovertext=hover_text_highlighted,
-                hoverinfo="text",
-                hovertemplate="%{hovertext}<extra></extra>"
-            ))
+            # Create separate trace for each highlighted player
+            for _, player_row in highlighted.iterrows():
+                fig.add_trace(go.Scatter(
+                    x=[player_row["PCA1"]],
+                    y=[player_row["PCA2"]],
+                    mode="markers+text",
+                    marker=dict(size=12, color=color, symbol="diamond", line=dict(width=2, color="black")),
+                    text=[player_row["Player"]],
+                    textposition="bottom center",
+                    name=player_row["Player"],  # Player name in legend
+                    hovertext=hover_text_highlighted,
+                    hoverinfo="text",
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    legendgroup="highlighted",
+                    showlegend=True
+                ))
 
     # Add loadings (vectors)
     for i, metric in enumerate(selected_metrics):
@@ -226,16 +233,38 @@ def main():
     st.plotly_chart(fig, use_container_width=True)
     st.success("✅ PCA plot generated successfully!")
 
-    # 9️⃣ Export to HTML (renumbered from original 7️⃣)
+    # 9️⃣ Export Results
     st.header("8️⃣ Export Results")
-    if st.button("Export to HTML"):
-        html = fig.to_html(full_html=True, include_plotlyjs='cdn')
-        st.download_button(
-            label="Download HTML",
-            data=html,
-            file_name="pca_analysis.html",
-            mime="text/html"
-        )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Export to HTML
+        if st.button("Export to HTML"):
+            html = fig.to_html(full_html=True, include_plotlyjs='cdn')
+            st.download_button(
+                label="Download HTML",
+                data=html,
+                file_name="pca_analysis.html",
+                mime="text/html"
+            )
+    
+    with col2:
+        # Export to PNG with 300 DPI
+        if st.button("Export to PNG (300 DPI)"):
+            # Create a BytesIO buffer to receive the image data
+            img_bytes = fig.to_image(format="png", width=1200, height=800, scale=3)  # scale=3 gives ~300 DPI
+            
+            # Convert to PIL Image to verify quality
+            img = Image.open(io.BytesIO(img_bytes))
+            
+            # Create download link
+            st.download_button(
+                label="Download PNG",
+                data=img_bytes,
+                file_name="pca_analysis.png",
+                mime="image/png"
+            )
 
 if __name__ == "__main__":
     main()
