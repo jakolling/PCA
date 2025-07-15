@@ -8,8 +8,18 @@ from io import BytesIO
 import base64
 from PIL import Image
 import io
+import plotly.io as pio
 
 st.set_page_config(page_title="PCA Analysis App", layout="wide")
+
+def install_kaleido():
+    import subprocess
+    import sys
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "kaleido"])
+        return True
+    except:
+        return False
 
 def main():
     st.title("⚽ PCA Analysis - Physical/Technical Metrics")
@@ -192,7 +202,6 @@ def main():
                 axis=1
             )
 
-            # Create separate trace for each highlighted player
             for _, player_row in highlighted.iterrows():
                 fig.add_trace(go.Scatter(
                     x=[player_row["PCA1"]],
@@ -201,7 +210,7 @@ def main():
                     marker=dict(size=12, color=color, symbol="diamond", line=dict(width=2, color="black")),
                     text=[player_row["Player"]],
                     textposition="bottom center",
-                    name=player_row["Player"],  # Player name in legend
+                    name=player_row["Player"],
                     hovertext=hover_text_highlighted,
                     hoverinfo="text",
                     hovertemplate="%{hovertext}<extra></extra>",
@@ -252,19 +261,21 @@ def main():
     with col2:
         # Export to PNG with 300 DPI
         if st.button("Export to PNG (300 DPI)"):
-            # Create a BytesIO buffer to receive the image data
-            img_bytes = fig.to_image(format="png", width=1200, height=800, scale=3)  # scale=3 gives ~300 DPI
-            
-            # Convert to PIL Image to verify quality
-            img = Image.open(io.BytesIO(img_bytes))
-            
-            # Create download link
-            st.download_button(
-                label="Download PNG",
-                data=img_bytes,
-                file_name="pca_analysis.png",
-                mime="image/png"
-            )
+            try:
+                # Try to export with Kaleido
+                img_bytes = fig.to_image(format="png", width=1200, height=800, scale=3)
+                st.download_button(
+                    label="Download PNG",
+                    data=img_bytes,
+                    file_name="pca_analysis.png",
+                    mime="image/png"
+                )
+            except:
+                st.warning("Kaleido package is required for PNG export. Installing now...")
+                if install_kaleido():
+                    st.success("Kaleido installed successfully! Please click the export button again.")
+                else:
+                    st.error("Failed to install Kaleido. Please install it manually with: pip install kaleido")
 
 if __name__ == "__main__":
     main()
