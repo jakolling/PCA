@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from io import BytesIO
 
 st.set_page_config(page_title="PCA Analysis App", layout="wide")
 
@@ -41,13 +42,18 @@ def main():
     # 2️⃣ Filter by Position
     st.header("2️⃣ Filter by Position")
     if "Position" in combined_df.columns:
-        all_positions = combined_df["Position"].dropna().unique().tolist()
+        # Split positions by comma and strip whitespace, then flatten the list
+        all_positions = combined_df["Position"].dropna().str.split(',').explode().str.strip().unique().tolist()
         positions = st.multiselect(
             "Select one or more positions to include:",
-            options=all_positions
+            options=sorted(all_positions)  # Sorting for better user experience
         )
         if positions:
-            combined_df = combined_df[combined_df["Position"].isin(positions)]
+            # Create a mask that checks if any of the player's positions is in the selected positions
+            mask = combined_df["Position"].str.split(',').apply(
+                lambda x: any(pos.strip() in positions for pos in x) if isinstance(x, list) else False
+            )
+            combined_df = combined_df[mask]
             st.success(f"{len(combined_df)} players found for selected positions.")
 
     # 3️⃣ Filter by Minutes
@@ -93,7 +99,12 @@ def main():
         st.warning("Please select at least 2 numeric columns.")
         st.stop()
 
-    df_clean = combined_df.dropna(subset=selected_metrics + (["Player"] if "Player" in combined_df.columns else []))
+    # Include Age in the clean dataframe if it exists
+    columns_to_keep = selected_metrics + ["Player", "Position", "League"]
+    if "Age" in combined_df.columns:
+        columns_to_keep.append("Age")
+
+    df_clean = combined_df.dropna(subset=columns_to_keep)
 
     if df_clean.empty:
         st.warning("No valid data left after filters.")
@@ -133,18 +144,36 @@ def main():
         ] if "Player" in df_league.columns else pd.DataFrame()
 
         if not normal_players.empty:
+            # Create hover text with position and age if available
+            hover_text = normal_players.apply(lambda row: 
+                f"<b>{row['Player']}</b><br>" +
+                (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
+                (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
+                f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
+                axis=1
+            )
+
             fig.add_trace(go.Scatter(
                 x=normal_players["PCA1"],
                 y=normal_players["PCA2"],
                 mode="markers",
                 marker=dict(size=8, color=color, opacity=0.7),
                 name=league,
-                text=normal_players["Player"] if "Player" in normal_players.columns else None,
-                hovertemplate="<b>%{text}</b><br>PCA1: %{x:.2f}<br>PCA2: %{y:.2f}<extra></extra>"
-                if "Player" in normal_players.columns else "PCA1: %{x:.2f}<br>PCA2: %{y:.2f}<extra></extra>"
+                text=hover_text,
+                hoverinfo="text",
+                hovertemplate="%{text}<extra></extra>"
             ))
 
         if not highlighted.empty:
+            # Create hover text for highlighted players
+            hover_text_highlighted = highlighted.apply(lambda row: 
+                f"<b>{row['Player']}</b><br>" +
+                (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
+                (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
+                f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
+                axis=1
+            )
+
             fig.add_trace(go.Scatter(
                 x=highlighted["PCA1"],
                 y=highlighted["PCA2"],
@@ -153,7 +182,9 @@ def main():
                 text=highlighted["Player"],
                 textposition="bottom center",
                 name="Highlighted",
-                hovertemplate="<b>%{text}</b><br>PCA1: %{x:.2f}<br>PCA2: %{y:.2f}<extra></extra>"
+                hovertext=hover_text_highlighted,
+                hoverinfo="text",
+                hovertemplate="%{hovertext}<extra></extra>"
             ))
 
     # Add loadings (vectors)
@@ -179,6 +210,17 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
     st.success("✅ PCA plot generated successfully!")
+
+    # Export to HTML
+    st.header("7️⃣ Export Results")
+    if st.button("Export to HTML"):
+        html = fig.to_html(full_html=True, include_plotlyjs='cdn')
+        st.download_button(
+            label="Download HTML",
+            data=html,
+            file_name="pca_analysis.html",
+            mime="text/html"
+        )
 
 if __name__ == "__main__":
     main()
