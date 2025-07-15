@@ -12,7 +12,7 @@ def main():
     st.title("⚽ PCA Analysis - Physical/Technical Metrics")
 
     st.markdown("""
-    Upload up to **10 XLS files**, filter by position, minimum minutes played,
+    Upload up to **10 XLS files**, filter by position, age range, minimum minutes played,
     choose numeric columns for PCA, highlight players, and visualize the results.
     """)
 
@@ -32,7 +32,6 @@ def main():
     dfs = []
     for file in uploaded_files:
         df = pd.read_excel(file)
-        # Auto-generate League name from file name
         df["League"] = file.name
         dfs.append(df)
         st.success(f"✅ File added: {file.name}")
@@ -42,22 +41,40 @@ def main():
     # 2️⃣ Filter by Position
     st.header("2️⃣ Filter by Position")
     if "Position" in combined_df.columns:
-        # Split positions by comma and strip whitespace, then flatten the list
         all_positions = combined_df["Position"].dropna().str.split(',').explode().str.strip().unique().tolist()
         positions = st.multiselect(
             "Select one or more positions to include:",
-            options=sorted(all_positions)  # Sorting for better user experience
+            options=sorted(all_positions)
         )
         if positions:
-            # Create a mask that checks if any of the player's positions is in the selected positions
             mask = combined_df["Position"].str.split(',').apply(
                 lambda x: any(pos.strip() in positions for pos in x) if isinstance(x, list) else False
             )
             combined_df = combined_df[mask]
             st.success(f"{len(combined_df)} players found for selected positions.")
 
-    # 3️⃣ Filter by Minutes
-    st.header("3️⃣ Filter by Minimum Minutes Played")
+    # 3️⃣ Filter by Age (new section)
+    st.header("3️⃣ Filter by Age Range")
+    if "Age" in combined_df.columns:
+        min_age = int(combined_df["Age"].min())
+        max_age = int(combined_df["Age"].max())
+        
+        age_range = st.slider(
+            "Select age range:",
+            min_value=min_age,
+            max_value=max_age,
+            value=(min_age, max_age)
+        )
+        combined_df = combined_df[
+            (combined_df["Age"] >= age_range[0]) & 
+            (combined_df["Age"] <= age_range[1])
+        ]
+        st.success(f"{len(combined_df)} players between ages {age_range[0]} and {age_range[1]}.")
+    else:
+        st.warning("No 'Age' column found in the data. Age filter will be skipped.")
+
+    # 4️⃣ Filter by Minutes (renumbered from original 3️⃣)
+    st.header("4️⃣ Filter by Minimum Minutes Played")
     minute_cols = [col for col in combined_df.columns if 'min' in col.lower() or 'minutes' in col.lower()]
     if minute_cols:
         minute_col = st.selectbox("Select column for minutes filter:", minute_cols)
@@ -71,8 +88,8 @@ def main():
         combined_df = combined_df[combined_df[minute_col] >= min_minutes]
         st.success(f"{len(combined_df)} players with at least {min_minutes} minutes.")
 
-    # 4️⃣ Highlight Players
-    st.header("4️⃣ Highlight Players")
+    # 5️⃣ Highlight Players (renumbered from original 4️⃣)
+    st.header("5️⃣ Highlight Players")
     if "Player" in combined_df.columns:
         player_names = combined_df["Player"].dropna().unique().tolist()
         highlighted_players = st.multiselect(
@@ -83,8 +100,8 @@ def main():
     else:
         highlighted_players = []
 
-    # 5️⃣ Select Metrics
-    st.header("5️⃣ Select Metrics (Numeric Columns)")
+    # 6️⃣ Select Metrics (renumbered from original 5️⃣)
+    st.header("6️⃣ Select Metrics (Numeric Columns)")
     numeric_cols = combined_df.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
         st.error("No numeric columns found in your data!")
@@ -110,7 +127,7 @@ def main():
         st.warning("No valid data left after filters.")
         st.stop()
 
-    # 6️⃣ Run PCA
+    # 7️⃣ Run PCA (renumbered from original 6️⃣)
     X = df_clean[selected_metrics].values
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -120,8 +137,8 @@ def main():
     df_clean["PCA1"] = coords[:, 0]
     df_clean["PCA2"] = coords[:, 1]
 
-    # 7️⃣ Plot
-    st.header("6️⃣ PCA Plot")
+    # 8️⃣ Plot (renumbered from original 7️⃣)
+    st.header("7️⃣ PCA Plot")
 
     fig = go.Figure()
 
@@ -144,7 +161,6 @@ def main():
         ] if "Player" in df_league.columns else pd.DataFrame()
 
         if not normal_players.empty:
-            # Create hover text with position and age if available
             hover_text = normal_players.apply(lambda row: 
                 f"<b>{row['Player']}</b><br>" +
                 (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
@@ -165,7 +181,6 @@ def main():
             ))
 
         if not highlighted.empty:
-            # Create hover text for highlighted players
             hover_text_highlighted = highlighted.apply(lambda row: 
                 f"<b>{row['Player']}</b><br>" +
                 (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
@@ -211,8 +226,8 @@ def main():
     st.plotly_chart(fig, use_container_width=True)
     st.success("✅ PCA plot generated successfully!")
 
-    # Export to HTML
-    st.header("7️⃣ Export Results")
+    # 9️⃣ Export to HTML (renumbered from original 7️⃣)
+    st.header("8️⃣ Export Results")
     if st.button("Export to HTML"):
         html = fig.to_html(full_html=True, include_plotlyjs='cdn')
         st.download_button(
