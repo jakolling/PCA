@@ -129,12 +129,18 @@ def main():
         st.warning("Please select at least 2 numeric columns.")
         st.stop()
 
-    # Include Age in the clean dataframe if it exists
-    columns_to_keep = selected_metrics + ["Player", "Position", "League"]
+    # Modified section to handle missing columns
+    columns_to_keep = selected_metrics.copy()
+    required_cols = ["Player", "Position", "League"]
+    available_cols = [col for col in required_cols if col in combined_df.columns]
+    columns_to_keep.extend(available_cols)
+
     if "Age" in combined_df.columns:
         columns_to_keep.append("Age")
 
-    df_clean = combined_df.dropna(subset=columns_to_keep)
+    # Verify all columns exist before dropna
+    existing_cols = [col for col in columns_to_keep if col in combined_df.columns]
+    df_clean = combined_df.dropna(subset=existing_cols)
 
     if df_clean.empty:
         st.warning("No valid data left after filters.")
