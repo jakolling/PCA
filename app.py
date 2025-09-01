@@ -131,7 +131,7 @@ def main():
 
     # Modified section to handle missing columns
     columns_to_keep = selected_metrics.copy()
-    required_cols = ["Player", "Position", "League"]
+    required_cols = ["Player", "Position", "League", "Team"]
     available_cols = [col for col in required_cols if col in combined_df.columns]
     columns_to_keep.extend(available_cols)
 
@@ -182,6 +182,7 @@ def main():
         if not normal_players.empty:
             hover_text = normal_players.apply(lambda row: 
                 f"<b>{row['Player']}</b><br>" +
+                (f"Club: {row['Team']}<br>" if pd.notna(row.get('Team')) else "") +
                 (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
                 (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
                 f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
@@ -202,6 +203,7 @@ def main():
         if not highlighted.empty:
             hover_text_highlighted = highlighted.apply(lambda row: 
                 f"<b>{row['Player']}</b><br>" +
+                (f"Club: {row['Team']}<br>" if pd.notna(row.get('Team')) else "") +
                 (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
                 (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
                 f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
