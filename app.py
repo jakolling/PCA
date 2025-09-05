@@ -1,23 +1,32 @@
 # app.py
 # ------------------------------------------------------------
-# PCA Analysis — Football Metrics (with football-pitch selector)
+# PCA Analysis — Football Metrics (mplsoccer-styled pitch + clickable selector)
 # ------------------------------------------------------------
+import io
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from PIL import Image
 
-# Optional click support on Plotly (recommended)
+# Optional: click support on Plotly (recommended)
 try:
     from streamlit_plotly_events import plotly_events
     _PLOTLY_EVENTS = True
 except Exception:
     _PLOTLY_EVENTS = False
 
+# mplsoccer to draw a *beautiful* pitch background
+try:
+    from mplsoccer import Pitch
+    _MPLSOCCER = True
+except Exception:
+    _MPLSOCCER = False
+
 # -------------------------
-# Page config & top styling
+# Page config & quick CSS
 # -------------------------
 st.set_page_config(
     page_title="PCA Analysis — Football Metrics",
@@ -27,48 +36,41 @@ st.set_page_config(
     menu_items={
         "Get Help": "https://docs.streamlit.io/",
         "Report a bug": "https://github.com/streamlit/streamlit/issues",
-        "About": "Explore football data with a clean UI, pitch position selector, and 2D PCA."
+        "About": "Explore football data with a clean UI, mplsoccer-styled pitch selector, and 2D PCA."
     },
 )
 
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 2rem; padding-bottom: 2rem;}
-    .stButton>button {border-radius: 999px;}
-    .stDownloadButton>button {border-radius: 12px;}
+      .block-container { padding-top: 1.4rem; padding-bottom: 1.2rem; }
+      .stButton>button, .stDownloadButton>button { border-radius: 12px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # -------------------------
-# Pitch position coordinates
-# (120 x 80 reference space)
+# Pitch position coordinates (StatsBomb 120x80 reference)
 # -------------------------
 POSITION_POINTS = {
-    # GK
     "GK":  (6, 40),
 
-    # Back line
     "RB":  (25, 66),
     "RCB": (22, 48),
     "CB":  (22, 40),
     "LCB": (22, 32),
     "LB":  (25, 14),
 
-    # Wing-backs
     "RWB": (40, 70),
     "LWB": (40, 10),
 
-    # Midfield
     "DM":  (40, 40),
     "RCM": (55, 52),
     "CM":  (55, 40),
     "LCM": (55, 28),
     "AM":  (70, 40),
 
-    # Wingers / forwards
     "RW":  (75, 68),
     "LW":  (75, 12),
     "RF":  (85, 55),
@@ -99,29 +101,62 @@ def toggle_selection(sel_key: str, pos: str):
     else:
         st.session_state[sel_key].add(pos)
 
-def draw_pitch_plotly(selected: set[str], height: int = 560) -> go.Figure:
-    """Plotly pitch with clickable markers for positions."""
-    L, W = 120, 80
+@st.cache_data(show_spinner=False)
+def make_mplsoccer_pitch_png(
+    pitch_color="#0b3b17",    # deep grass
+    line_color="#f7f7f7",     # bright lines
+    figsize=(10, 6.666),      # 120:80 ratio -> 1.5
+    dpi=240
+) -> bytes:
+    """
+    Render a nice mplsoccer pitch (StatsBomb 120x80) and return PNG bytes.
+    """
+    if not _MPLSOCCER:
+        return b""
+
+    pitch = Pitch(
+        pitch_type="statsbomb",
+        pitch_color=pitch_color,
+        line_color=line_color,
+        linewidth=2
+    )
+    fig, ax = pitch.draw(figsize=figsize)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0)
+    buf.seek(0)
+    return buf.getvalue()
+
+def draw_pitch_plotly_with_mpl_bg(selected: set[str], height: int = 560) -> go.Figure:
+    """
+    Build a Plotly figure in 0..120 x 0..80 space, using an mplsoccer PNG as background.
+    Add clickable position markers on top.
+    """
+    # Base axes in StatsBomb units
     fig = go.Figure()
+    fig.update_xaxes(range=[0, 120], showgrid=False, zeroline=False, visible=False)
+    fig.update_yaxes(range=[0, 80], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1)
 
-    # Outer pitch & features
-    fig.add_shape(type="rect", x0=0, y0=0, x1=L, y1=W, line=dict(width=2))
-    fig.add_shape(type="line", x0=L/2, y0=0, x1=L/2, y1=W, line=dict(width=1))
+    # Background: mplsoccer pitch image
+    if _MPLSOCCER:
+        png_bytes = make_mplsoccer_pitch_png()
+        if png_bytes:
+            img = Image.open(io.BytesIO(png_bytes))
+            fig.add_layout_image(
+                dict(
+                    source=img,
+                    xref="x", yref="y",
+                    x=0, y=80,              # top-left corner in data coords
+                    sizex=120, sizey=80,    # stretch to full field
+                    sizing="stretch",
+                    layer="below",
+                    opacity=1.0,
+                )
+            )
+    else:
+        # Fallback: simple green background
+        fig.add_shape(type="rect", x0=0, y0=0, x1=120, y1=80, fillcolor="#0b3b17", line=dict(width=0))
 
-    theta = np.linspace(0, 2*np.pi, 200)
-    cx, cy, r = L/2, W/2, 10
-    fig.add_trace(go.Scatter(x=cx + r*np.cos(theta), y=cy + r*np.sin(theta),
-                             mode="lines", line=dict(width=1), hoverinfo="skip", showlegend=False))
-    # Boxes
-    fig.add_shape(type="rect", x0=0,   y0=18, x1=18,  y1=62, line=dict(width=1))
-    fig.add_shape(type="rect", x0=0,   y0=30, x1=6,   y1=50, line=dict(width=1))
-    fig.add_shape(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(width=1))
-    fig.add_shape(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(width=1))
-    # Spots
-    fig.add_trace(go.Scatter(x=[12, 108, 60], y=[40, 40, 40], mode="markers",
-                             marker=dict(size=4), hoverinfo="skip", showlegend=False))
-
-    # Positions (markers+labels)
+    # Positions layer (clickable)
     xs, ys, labels = [], [], []
     for pos in DEFAULT_POSITION_ORDER:
         x, y = POSITION_POINTS[pos]
@@ -139,23 +174,24 @@ def draw_pitch_plotly(selected: set[str], height: int = 560) -> go.Figure:
         )
     )
 
-    fig.update_xaxes(range=[-2, L+2], showgrid=False, zeroline=False, visible=False)
-    fig.update_yaxes(range=[-2, W+2], showgrid=False, zeroline=False, visible=False)
     fig.update_layout(
         height=height,
         margin=dict(l=10, r=10, t=10, b=10),
-        plot_bgcolor="#0C4A1E",  # grass tone
-        paper_bgcolor="#0C4A1E",
+        plot_bgcolor="#0b3b17",
+        paper_bgcolor="#0b3b17",
     )
     return fig
 
-def position_selector(label: str, key_prefix: str) -> list[str]:
-    """Pitch selector (clickable if streamlit-plotly-events is available) with chip fallback."""
+def position_selector_pitch(label: str, key_prefix: str) -> list[str]:
+    """
+    Pitch selector with mplsoccer background and Plotly clickable markers.
+    Falls back to chip grid if click component is missing.
+    """
     st.markdown(f"**{label}**")
     sel_key = f"{key_prefix}_selected"
     ensure_session_set(sel_key)
 
-    c1, c2, c3, c4 = st.columns([1,1,1,3])
+    c1, c2, c3, _ = st.columns([1,1,1,6])
     with c1:
         if st.button("Select all", key=f"{key_prefix}_all"):
             st.session_state[sel_key] = set(DEFAULT_POSITION_ORDER)
@@ -167,11 +203,8 @@ def position_selector(label: str, key_prefix: str) -> list[str]:
             st.session_state[sel_key] = set(set(DEFAULT_POSITION_ORDER) - st.session_state[sel_key])
 
     if _PLOTLY_EVENTS:
-        fig = draw_pitch_plotly(st.session_state[sel_key])
-        clicked = plotly_events(
-            fig, click_event=True, hover_event=False, select_event=False,
-            override_height=560, override_width="100%"
-        )
+        fig = draw_pitch_plotly_with_mpl_bg(st.session_state[sel_key])
+        clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=560, override_width="100%")
         if clicked:
             idx = clicked[0].get("pointIndex", None)
             if idx is not None and 0 <= idx < len(DEFAULT_POSITION_ORDER):
@@ -181,17 +214,18 @@ def position_selector(label: str, key_prefix: str) -> list[str]:
         st.caption("Tip: Click any label on the pitch to toggle selection.")
     else:
         st.warning("Interactive clicks require `streamlit-plotly-events`. Falling back to chip selector.")
+        # Simple chip fallback
         chips_per_row = 10
-        rows = (len(DEFAULT_POSITION_ORDER) + chips_per_row - 1) // chips_per_row
         i = 0
+        rows = (len(DEFAULT_POSITION_ORDER) + chips_per_row - 1) // chips_per_row
         for _ in range(rows):
             cols = st.columns(chips_per_row, gap="small")
             for col in cols:
                 if i >= len(DEFAULT_POSITION_ORDER): break
                 opt = DEFAULT_POSITION_ORDER[i]; i += 1
                 sel = opt in st.session_state[sel_key]
-                label = f"● {opt}" if sel else opt
-                if col.button(label, key=f"{key_prefix}_{opt}"):
+                label_btn = f"● {opt}" if sel else opt
+                if col.button(label_btn, key=f"{key_prefix}_{opt}"):
                     toggle_selection(sel_key, opt)
 
     return sorted(list(st.session_state[sel_key]))
@@ -206,7 +240,7 @@ def load_excel_files(files) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 def normalize_pos_cell(cell: str) -> list[str]:
-    """Split comma-separated positions and uppercase/trim each item."""
+    """Split comma-separated positions and uppercase/trim each item (CB, RB -> ['CB','RB'])."""
     if not isinstance(cell, str):
         cell = str(cell)
     parts = [p.strip().upper() for p in cell.split(",") if p.strip()]
@@ -217,8 +251,8 @@ def normalize_pos_cell(cell: str) -> list[str]:
 # -------------------------
 st.title("⚽ PCA Analysis — Physical & Technical Metrics")
 st.markdown(
-    "Upload your Excel files, select positions **on the football pitch**, pick numeric metrics, "
-    "and explore a **2D PCA** plot with loadings. Everything is optimized for a smooth workflow."
+    "Upload your Excel files, select positions **on an mplsoccer-styled football pitch**, pick numeric metrics, "
+    "and explore a **2D PCA** plot with loadings."
 )
 
 # -------------------------
@@ -282,10 +316,10 @@ with st.sidebar:
     export_btn = st.button("Export plot")
 
 # -------------------------
-# Pitch selector
+# Pitch selector (mplsoccer look)
 # -------------------------
 st.header("Select positions on the pitch")
-selected_positions = position_selector(
+selected_positions = position_selector_pitch(
     label="Click labels on the pitch to (de)select. Each comma-separated position in your data counts individually.",
     key_prefix="pitchpos",
 )
@@ -363,10 +397,8 @@ if df_numeric.empty:
 X = df_numeric[selected_metrics].astype(float).values
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
-
 pca = PCA(n_components=2, random_state=42)
 coords = pca.fit_transform(X_scaled)
-
 df_numeric["PCA1"] = coords[:, 0]
 df_numeric["PCA2"] = coords[:, 1]
 exp1, exp2 = pca.explained_variance_ratio_[0], pca.explained_variance_ratio_[1]
@@ -403,13 +435,13 @@ def hover_text(row):
     parts.append(f"PC2: {row['PCA2']:.2f}")
     return "<br>".join(parts)
 
-# Mark highlighted (if any)
+# Highlight flags
 if player_col:
     df_numeric["_is_high"] = df_numeric[player_col].astype(str).isin(set(highlighted_players))
 else:
     df_numeric["_is_high"] = False
 
-# Normal groups
+# Draw groups
 for g in groups:
     dfg = df_numeric[df_numeric[group_col].astype(str) == g]
     normal = dfg[~dfg["_is_high"]]
@@ -425,7 +457,6 @@ for g in groups:
                 hovertemplate="%{text}<extra></extra>",
             )
         )
-    # Highlighted points
     high = dfg[dfg["_is_high"]]
     if not high.empty and player_col:
         for _, r in high.iterrows():
@@ -448,7 +479,7 @@ for g in groups:
                 )
             )
 
-# Loadings (vectors)
+# Loadings
 if show_loadings:
     comps = pca.components_
     for i, metric in enumerate(selected_metrics):
@@ -484,9 +515,8 @@ if export_btn:
         html = fig.to_html(full_html=True, include_plotlyjs="cdn")
         st.download_button("Download HTML", data=html, file_name="pca_analysis.html", mime="text/html")
     else:
-        # PNG export requires kaleido
         try:
-            img_bytes = fig.to_image(format="png", width=1400, height=900, scale=3)
+            img_bytes = fig.to_image(format="png", width=1400, height=900, scale=3)  # needs kaleido
             st.download_button("Download PNG", data=img_bytes, file_name="pca_analysis.png", mime="image/png")
         except Exception:
             st.warning("PNG export requires the 'kaleido' package. Install with: `pip install kaleido`.")
@@ -504,5 +534,5 @@ with st.expander("Data preview"):
 
 st.caption(
     "Positions are matched individually when separated by commas (e.g., 'CB, RB' matches both CB and RB). "
-    "Use the pitch above for quick include/exclude."
+    "The pitch uses mplsoccer styling; clicks are handled by a transparent Plotly layer."
 )
