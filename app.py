@@ -1,5 +1,324 @@
 # app.py
 # ------------------------------------------------------------
+# PCA Analysis — Football Metrics (checkbox position selector)
+# Positions: ONLY tokens from your DataFrame (comma-separated, case-insensitive)
+# ------------------------------------------------------------
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+# -------------------------
+# Page setup
+# -------------------------
+st.set_page_config(page_title="PCA Analysis — Football Metrics", page_icon="⚽", layout="wide")
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1rem; padding-bottom: .75rem; }
+      .stButton>button, .stDownloadButton>button { border-radius: 10px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -------------------------
+# Helpers
+# -------------------------
+@st.cache_data(show_spinner=False)
+def load_excel_files(files) -> pd.DataFrame:
+    dfs = []
+    for f in files:
+        df = pd.read_excel(f)
+        # keep file name as a "League" hint if you like
+        df["League"] = getattr(f, "name", "Uploaded")
+        dfs.append(df)
+    return pd.concat(dfs, ignore_index=True)
+
+def tokens_from_cell(cell) -> list[str]:
+    if not isinstance(cell, str):
+        cell = str(cell)
+    return [t.strip() for t in cell.split(",") if t.strip()]
+
+def norm_token(t: str) -> str:
+    return t.upper().strip()
+
+def build_display_map(series: pd.Series) -> dict:
+    """normalized token -> original display text (preserve first seen)."""
+    disp = {}
+    for cell in series.dropna().astype(str):
+        for tok in tokens_from_cell(cell):
+            n = norm_token(tok)
+            disp.setdefault(n, tok)
+    return disp
+
+def checkbox_selector_positions(tokens_norm_sorted: list[str], display_map: dict, key_prefix: str) -> list[str]:
+    """Checkbox grid with Select all / Clear / Invert actions."""
+    st.markdown("**Positions**")
+    sel_key = f"{key_prefix}_selected"
+    if sel_key not in st.session_state:
+        st.session_state[sel_key] = set()
+
+    c1, c2, c3 = st.columns([1,1,1])
+    with c1:
+        if st.button("Select all"):
+            st.session_state[sel_key] = set(tokens_norm_sorted)
+    with c2:
+        if st.button("Clear"):
+            st.session_state[sel_key] = set()
+    with c3:
+        if st.button("Invert"):
+            st.session_state[sel_key] = set(set(tokens_norm_sorted) - st.session_state[sel_key])
+
+    # grid of checkboxes
+    per_row = 6
+    rows = (len(tokens_norm_sorted) + per_row - 1) // per_row
+    i = 0
+    for _ in range(rows):
+        cols = st.columns(per_row)
+        for col in cols:
+            if i >= len(tokens_norm_sorted):
+                break
+            tn = tokens_norm_sorted[i]; i += 1
+            label = display_map.get(tn, tn)
+            checked = tn in st.session_state[sel_key]
+            new_val = col.checkbox(label, value=checked, key=f"{key_prefix}_{tn}")
+            # sync back to set
+            if new_val:
+                st.session_state[sel_key].add(tn)
+            else:
+                st.session_state[sel_key].discard(tn)
+
+    # return display labels (exactly as in data) for selected
+    return [display_map.get(tn, tn) for tn in sorted(st.session_state[sel_key])]
+
+# -------------------------
+# App
+# -------------------------
+st.title("⚽ PCA Analysis — Physical & Technical Metrics")
+st.markdown("Upload your Excel file(s), pick **positions using checkboxes**, choose metrics, and explore a **2D PCA**.")
+
+# Sidebar — data & options
+with st.sidebar:
+    st.header("1) Data upload")
+    files = st.file_uploader(
+        "Select Excel file(s)",
+        type=["xls", "xlsx"],
+        accept_multiple_files=True,
+        help="Your data should include at least 'Player', 'Position' and numeric columns."
+    )
+    if not files:
+        st.info("Upload at least one file to continue.")
+        st.stop()
+
+    data = load_excel_files(files)
+
+    # Position column
+    candidate_cols = [c for c in data.columns if c.lower() in ("pos", "position", "positions")]
+    position_col = st.selectbox("Position column", options=candidate_cols or ["Position"])
+    if position_col not in data.columns:
+        st.error(f"Column '{position_col}' not found.")
+        st.stop()
+
+    st.divider()
+    st.header("2) Filters")
+
+    # Minutes
+    minute_cols = [c for c in data.columns if "min" in c.lower() or "minutes" in c.lower()]
+    if minute_cols:
+        minute_col = st.selectbox("Minutes column", minute_cols, index=0)
+        max_min = int(max(1, float(pd.to_numeric(data[minute_col], errors="coerce").fillna(0).max())))
+        min_minutes = st.slider("Minimum minutes", 0, max_min, 0, step=50)
+    else:
+        minute_col, min_minutes = None, 0
+        st.caption("No minutes column detected — minute filter disabled.")
+
+    # Age
+    if "Age" in data.columns:
+        ages = pd.to_numeric(data["Age"], errors="coerce")
+        if ages.notna().any():
+            a_min, a_max = int(ages.min()), int(ages.max())
+            age_range = st.slider("Age range", a_min, a_max, (a_min, a_max))
+        else:
+            age_range = None
+            st.caption("Age column is not numeric — age filter disabled.")
+    else:
+        age_range = None
+        st.caption("No 'Age' column — age filter disabled.")
+
+    st.divider()
+    st.header("3) Plot options")
+    color_by = st.selectbox("Color points by",
+                            options=[c for c in ["League", "Team", position_col] if c in data.columns] or ["League"])
+    point_size = st.slider("Point size", 4, 16, 8)
+    point_opacity = st.slider("Point opacity", 0.2, 1.0, 0.85)
+    show_loadings = st.toggle("Show loadings (metric vectors)", value=True)
+    loadings_scale = st.slider("Loadings length", 1.0, 6.0, 3.0, 0.5)
+
+    st.divider()
+    st.header("4) Export")
+    export_format = st.radio("Format", ["HTML", "PNG (via kaleido)"], horizontal=True)
+    export_btn = st.button("Export plot")
+
+# Build position tokens from data (ONLY what's in the file)
+pos_series = data[position_col].dropna().astype(str)
+display_map = build_display_map(pos_series)       # normalized -> original text
+tokens_norm_sorted = sorted(display_map.keys())
+if not tokens_norm_sorted:
+    st.error(f"No positions found in column '{position_col}'.")
+    st.stop()
+
+# Position selector — checkboxes
+st.header("Select positions")
+selected_display = checkbox_selector_positions(tokens_norm_sorted, display_map, key_prefix="poschk")
+
+# Highlight players (optional)
+st.subheader("Highlight players (optional)")
+player_col = "Player" if "Player" in data.columns else None
+if player_col:
+    player_opts = sorted(pd.Series(data[player_col].astype(str)).unique().tolist())
+    highlighted_players = st.multiselect("Select up to 5 players to label",
+                                         options=player_opts, max_selections=5, placeholder="Type a name…")
+else:
+    highlighted_players = []
+    st.caption("No 'Player' column — highlight disabled.")
+
+# Metrics selection
+st.header("Metrics selection")
+numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+if not numeric_cols:
+    st.error("No numeric columns found — please upload data with numeric metrics.")
+    st.stop()
+
+non_metric_hints = {"age", "height", "weight", "minutes", "min", "games"}
+default_metrics = [c for c in numeric_cols if c.lower() not in non_metric_hints] or numeric_cols
+selected_metrics = st.multiselect("Pick at least two numeric columns for PCA",
+                                  options=numeric_cols,
+                                  default=default_metrics[: min(6, len(default_metrics))])
+if len(selected_metrics) < 2:
+    st.warning("Select at least two numeric columns to run PCA.")
+    st.stop()
+
+# Filtering (positions/minutes/age)
+df = data.copy()
+
+selected_norm = {norm_token(s) for s in selected_display}
+if selected_norm:
+    df = df[df[position_col].astype(str).apply(
+        lambda s: any(norm_token(t) in selected_norm for t in tokens_from_cell(s))
+    )]
+
+if minute_col:
+    df[minute_col] = pd.to_numeric(df[minute_col], errors="coerce")
+    df = df[df[minute_col] >= min_minutes]
+
+if age_range is not None and "Age" in df.columns:
+    df["Age"] = pd.to_numeric(df["Age"], errors="coerce")
+    df = df[(df["Age"] >= age_range[0]) & (df["Age"] <= age_range[1])]
+
+df_numeric = df.dropna(subset=selected_metrics).copy()
+if df_numeric.empty:
+    st.warning("No rows left after filters. Try relaxing filters or pick different metrics.")
+    st.stop()
+
+# PCA
+X = df_numeric[selected_metrics].astype(float).values
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+pca = PCA(n_components=2, random_state=42)
+coords = pca.fit_transform(X_scaled)
+df_numeric["PCA1"] = coords[:, 0]
+df_numeric["PCA2"] = coords[:, 1]
+exp1, exp2 = pca.explained_variance_ratio_[0], pca.explained_variance_ratio_[1]
+
+# Plot (Plotly)
+st.header("PCA plot")
+fig = go.Figure()
+
+group_col = color_by if color_by in df_numeric.columns else "League"
+groups = sorted(df_numeric[group_col].astype(str).unique().tolist())
+palette = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+           "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+pal = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+def hover_text(row):
+    parts = []
+    if "Player" in row and pd.notna(row["Player"]): parts.append(f"<b>{row['Player']}</b>")
+    if "Team" in row and pd.notna(row["Team"]):     parts.append(f"Club: {row['Team']}")
+    if group_col in row and pd.notna(row[group_col]): parts.append(f"{group_col}: {row[group_col]}")
+    if "Age" in row and pd.notna(row["Age"]):
+        try: parts.append(f"Age: {int(row['Age'])}")
+        except Exception: parts.append(f"Age: {row['Age']}")
+    parts.append(f"PC1: {row['PCA1']:.2f}")
+    parts.append(f"PC2: {row['PCA2']:.2f}")
+    return "<br>".join(parts)
+
+# Optional highlight
+if player_col:
+    df_numeric["_is_high"] = df_numeric[player_col].astype(str).isin(set(highlighted_players))
+else:
+    df_numeric["_is_high"] = False
+
+for g in groups:
+    dfg = df_numeric[df_numeric[group_col].astype(str) == g]
+    base = dfg[~dfg["_is_high"]]
+    if not base.empty:
+        fig.add_trace(go.Scatter(
+            x=base["PCA1"], y=base["PCA2"], mode="markers", name=str(g),
+            marker=dict(size=8, opacity=0.85, color=pal[g]),
+            text=[hover_text(r) for _, r in base.iterrows()],
+            hoverinfo="text", hovertemplate="%{text}<extra></extra>",
+        ))
+    hi = dfg[dfg["_is_high"]]
+    if not hi.empty and player_col:
+        for _, r in hi.iterrows():
+            fig.add_trace(go.Scatter(
+                x=[r["PCA1"]], y=[r["PCA2"]], mode="markers+text", name=str(r[player_col]),
+                marker=dict(size=12, opacity=1.0, color=pal[g], symbol="diamond", line=dict(width=2, color="black")),
+                text=[str(r[player_col])], textposition="bottom center",
+                hovertext=[hover_text(r)], hoverinfo="text", hovertemplate="%{hovertext}<extra></extra>",
+                legendgroup="highlighted", showlegend=True,
+            ))
+
+if show_loadings:
+    comps = pca.components_
+    for i, metric in enumerate(selected_metrics):
+        fig.add_trace(go.Scatter(
+            x=[0, comps[0, i] * loadings_scale], y=[0, comps[1, i] * loadings_scale],
+            mode="lines+text", line=dict(width=2), text=[None, metric],
+            textposition="top center", showlegend=False, hoverinfo="skip",
+        ))
+
+fig.update_layout(
+    title=f"PCA — PC1 ({exp1:.1%}) vs PC2 ({exp2:.1%})",
+    xaxis_title="PC1", yaxis_title="PC2",
+    template="plotly_white", height=780, margin=dict(l=20, r=20, t=60, b=20),
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# Export
+if export_btn:
+    if export_format.startswith("HTML"):
+        html = fig.to_html(full_html=True, include_plotlyjs="cdn")
+        st.download_button("Download HTML", data=html, file_name="pca_analysis.html", mime="text/html")
+    else:
+        try:
+            img = fig.to_image(format="png", width=1400, height=900, scale=3)  # needs kaleido
+            st.download_button("Download PNG", data=img, file_name="pca_analysis.png", mime="image/png")
+        except Exception:
+            st.warning("PNG export requires the 'kaleido' package. Install with: `pip install kaleido`.")
+
+# Data preview
+with st.expander("Data preview"):
+    meta_cols = [c for c in ["Player", position_col, "League", "Team", "Age"] if c in df_numeric.columns]
+    st.dataframe(df_numeric[[*meta_cols, *selected_metrics, "PCA1", "PCA2"]].head(200),
+                 use_container_width=True, height=320)
+
+st.caption("Positions are taken exactly from your file. Comma-separated tokens count individually for filtering.")
+# app.py
+# ------------------------------------------------------------
 # PCA Analysis — Football Metrics (Horizontal 16:9 mplsoccer template)
 # Positions shown = EXACT tokens from your DataFrame (comma-separated)
 # Deterministic field coordinates inferred PER TOKEN (no aliasing / no grouping)
@@ -1122,4 +1441,5 @@ st.caption(
     "Only positions present in your file are shown on the pitch (labels displayed exactly as in the dataset). "
     "Comma-separated tokens count individually for filtering."
 )
+
 
