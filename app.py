@@ -7,6 +7,157 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+# ---------- Virtual Pitch Selector (NO GROUPING) ----------
+# Each position label from the dataframe (comma-separated tokens) is its own clickable item.
+from typing import Dict, List, Tuple
+import io
+from PIL import Image
+from mplsoccer import Pitch
+
+# Optional click capture; fall back to multiselect if not available.
+try:
+    from streamlit_plotly_events import plotly_events
+    _HAS_SPE = True
+except Exception:
+    _HAS_SPE = False
+
+def _tokens_from_series_exact(series: pd.Series) -> List[str]:
+    toks = []
+    for cell in series.dropna().astype(str):
+        for tok in str(cell).split(","):
+            tok = tok.strip()
+            if tok:
+                toks.append(tok)  # exact, no normalization
+    # unique preserving order
+    seen = set()
+    uniq = []
+    for t in toks:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+def _coords_for_labels_exact(labels: List[str], pitch_length: int = 120, pitch_width: int = 80) -> Dict[str, Tuple[float, float]]:
+    # Canonical exact matches only (no aliasing)
+    known: Dict[str, Tuple[float, float]] = {
+        "GK": (6, pitch_width/2),
+        "RB": (20, pitch_width*0.25),
+        "RCB": (18, pitch_width*0.45),
+        "CB": (18, pitch_width/2),
+        "LCB": (18, pitch_width*0.55),
+        "LB": (20, pitch_width*0.75),
+        "RWB": (28, pitch_width*0.28),
+        "LWB": (28, pitch_width*0.72),
+        "DM": (38, pitch_width/2),
+        "CDM": (38, pitch_width/2),
+        "RDM": (38, pitch_width*0.44),
+        "LDM": (38, pitch_width*0.56),
+        "CM": (52, pitch_width/2),
+        "RCM": (52, pitch_width*0.44),
+        "LCM": (52, pitch_width*0.56),
+        "AM": (66, pitch_width/2),
+        "CAM": (66, pitch_width/2),
+        "RAM": (66, pitch_width*0.44),
+        "LAM": (66, pitch_width*0.56),
+        "RW": (78, pitch_width*0.30),
+        "LW": (78, pitch_width*0.70),
+        "RM": (70, pitch_width*0.33),
+        "LM": (70, pitch_width*0.67),
+        "RF": (92, pitch_width*0.45),
+        "LF": (92, pitch_width*0.55),
+        "SS": (88, pitch_width/2),
+        "CF": (100, pitch_width/2),
+        "ST": (100, pitch_width/2),
+    }
+    coords: Dict[str, Tuple[float, float]] = {}
+    shelf = [lbl for lbl in labels if lbl not in known]
+    if shelf:
+        import numpy as _np
+        xs = _np.linspace(8, pitch_length-8, num=len(shelf))
+        y = _np.full(len(shelf), 6.0)
+        for i, lbl in enumerate(shelf):
+            coords[lbl] = (float(xs[i]), float(y[i]))
+    for lbl in labels:
+        if lbl in known:
+            coords[lbl] = known[lbl]
+    return coords
+
+def _render_mpl_pitch_image(pitch_type: str = "statsbomb", pitch_length: int = 120, pitch_width: int = 80) -> Image.Image:
+    pitch = Pitch(pitch_type=pitch_type, pitch_color="white", line_color="black",
+                  goal_type="box", pitch_length=pitch_length, pitch_width=pitch_width)
+    fig, ax = pitch.draw(figsize=(10, 6.666), tight_layout=True)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
+    buf.seek(0)
+    return Image.open(buf).convert("RGBA")
+
+def virtual_pitch_selector_positions(series: pd.Series, *, key_prefix: str = "pos", pitch_type: str = "statsbomb",
+                                     pitch_length: int = 120, pitch_width: int = 80) -> list[str]:
+    import plotly.graph_objects as go
+    labels = _tokens_from_series_exact(series)
+    if not labels:
+        st.warning("Não encontrei posições na coluna informada.")
+        return []
+
+    # keep state
+    sel_key = f"{key_prefix}_selected_labels"
+    if sel_key not in st.session_state:
+        st.session_state[sel_key] = []
+
+    coords = _coords_for_labels_exact(labels, pitch_length=pitch_length, pitch_width=pitch_width)
+    bg = _render_mpl_pitch_image(pitch_type=pitch_type, pitch_length=pitch_length, pitch_width=pitch_width)
+
+    fig = go.Figure()
+    fig.add_layout_image(
+        dict(
+            source=bg, xref="x", yref="y", x=0, y=pitch_width,
+            sizex=pitch_length, sizey=pitch_width, sizing="stretch",
+            layer="below", opacity=1.0,
+        )
+    )
+    xs = [coords[l][0] for l in labels]
+    ys = [coords[l][1] for l in labels]
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode="markers+text",
+        text=labels, textposition="top center",
+        marker=dict(size=14, line=dict(width=1), opacity=0.9),
+        customdata=labels, hovertemplate="%{customdata}<extra></extra>",
+    ))
+    fig.update_xaxes(range=[0, pitch_length], visible=False, constrain="domain")
+    fig.update_yaxes(range=[0, pitch_width], visible=False, scaleanchor="x", scaleratio=1)
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), dragmode=False, height=640)
+
+    col_plot, col_sel = st.columns([2.2, 1.0])
+    with col_plot:
+        if _HAS_SPE:
+            clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key=f"{key_prefix}_pitch")
+            st.plotly_chart(fig, use_container_width=True)
+            if clicked:
+                try:
+                    idx = int(clicked[0].get("pointIndex", clicked[0].get("pointNumber", -1)))
+                except Exception:
+                    idx = -1
+                if 0 <= idx < len(labels):
+                    lab = labels[idx]
+                    cur = set(st.session_state[sel_key])
+                    if lab in cur:
+                        cur.remove(lab)
+                    else:
+                        cur.add(lab)
+                    st.session_state[sel_key] = list(cur)
+        else:
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Dica: instale `streamlit-plotly-events` para habilitar cliques no campo.")
+
+    with col_sel:
+        current = st.session_state[sel_key]
+        new_sel = st.multiselect("Selecionadas", options=labels, default=current, key=f"{key_prefix}_msel")
+        st.session_state[sel_key] = new_sel
+        st.write(f"{len(new_sel)} posição(ões) selecionada(s).")
+
+    return st.session_state[sel_key]
+# ----------------------------------------------------------
+
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -54,7 +205,7 @@ def build_display_map(series: pd.Series) -> dict:
             disp.setdefault(n, tok)
     return disp
 
-def checkbox_selector_positions(tokens_norm_sorted: list[str], display_map: dict, key_prefix: str) -> list[str]:
+def virtual_pitch_selector_positions(df[pos_col], key_prefix='pos', pitch_type='statsbomb', pitch_length=120, pitch_width=80) -> list[str]:
     """Checkbox grid with Select all / Clear / Invert actions."""
     st.markdown("**Positions**")
     sel_key = f"{key_prefix}_selected"
@@ -172,7 +323,7 @@ if not tokens_norm_sorted:
 
 # Position selector — checkboxes
 st.header("Select positions")
-selected_display = checkbox_selector_positions(tokens_norm_sorted, display_map, key_prefix="poschk")
+selected_display = virtual_pitch_selector_positions(df[pos_col], key_prefix='pos', pitch_type='statsbomb', pitch_length=120, pitch_width=80)
 
 # Highlight players (optional)
 st.subheader("Highlight players (optional)")
