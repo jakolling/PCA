@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-plotly
-scikit-learn
-openpyxl
-kaleido
+streamlit>=1.33
+pandas>=2.1
+numpy>=1.26
+plotly>=5.20
+scikit-learn>=1.4
+openpyxl>=3.1    # read .xlsx
+kaleido>=0.2.1   # PNG export from Plotly
+streamlit-plotly-events>=0.0.6
