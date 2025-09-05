@@ -82,14 +82,16 @@ def _coords_for_labels_exact(labels: List[str], pitch_length: int = 120, pitch_w
             coords[lbl] = known[lbl]
     return coords
 
-def _render_mpl_pitch_image(pitch_type: str = "statsbomb", pitch_length: int = 120, pitch_width: int = 80) -> Image.Image:
+def _render_mpl_pitch_image(pitch_type: str = "statsbomb", pitch_length: int = 120, pitch_width: int = 80) -> str:
     pitch = Pitch(pitch_type=pitch_type, pitch_color="white", line_color="black",
                   goal_type="box", pitch_length=pitch_length, pitch_width=pitch_width)
     fig, ax = pitch.draw(figsize=(10, 6.666), tight_layout=True)
+    import io, base64
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
     buf.seek(0)
-    return Image.open(buf).convert("RGBA")
+    b64 = base64.b64encode(buf.read()).decode("utf-8")
+    return "data:image/png;base64," + b64
 
 def virtual_pitch_selector_positions(series: pd.Series, *, key_prefix: str = "pos", pitch_type: str = "statsbomb",
                                      pitch_length: int = 120, pitch_width: int = 80) -> list[str]:
@@ -106,7 +108,6 @@ def virtual_pitch_selector_positions(series: pd.Series, *, key_prefix: str = "po
 
     coords = _coords_for_labels_exact(labels, pitch_length=pitch_length, pitch_width=pitch_width)
     bg = _render_mpl_pitch_image(pitch_type=pitch_type, pitch_length=pitch_length, pitch_width=pitch_width)
-
     fig = go.Figure()
     fig.add_layout_image(
         dict(
@@ -115,26 +116,6 @@ def virtual_pitch_selector_positions(series: pd.Series, *, key_prefix: str = "po
             layer="below", opacity=1.0,
         )
     )
-    xs = [coords[l][0] for l in labels]
-    ys = [coords[l][1] for l in labels]
-    fig.add_trace(go.Scatter(
-        x=xs, y=ys, mode="markers+text",
-        text=labels, textposition="top center",
-        marker=dict(size=14, line=dict(width=1), opacity=0.9),
-        customdata=labels, hovertemplate="%{customdata}<extra></extra>",
-    ))
-    fig.update_xaxes(range=[0, pitch_length], visible=False, constrain="domain")
-    fig.update_yaxes(range=[0, pitch_width], visible=False, scaleanchor="x", scaleratio=1)
-    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), dragmode=False, height=640)
-
-    col_plot, col_sel = st.columns([2.2, 1.0])
-    with col_plot:
-        if _HAS_SPE:
-            clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key=f"{key_prefix}_pitch")
-            st.plotly_chart(fig, use_container_width=True)
-            if clicked:
-                try:
-                    idx = int(clicked[0].get("pointIndex", clicked[0].get("pointNumber", -1)))
                 except Exception:
                     idx = -1
                 if 0 <= idx < len(labels):
