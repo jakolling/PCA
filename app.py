@@ -1,4 +1,4 @@
-# app_refined_streamlit_fixed.py
+# app_refined_streamlit_multiselect.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -20,56 +20,6 @@ st.set_page_config(
         "About": "PCA explorer for football data."
     },
 )
-
-# =========================
-# Helper: chip-like selector (com ✅)
-# =========================
-def chip_selector(
-    label: str,
-    options: list[str],
-    key_prefix: str,
-    default_selected: list[str] | None = None,
-    chips_per_row: int = 8,
-) -> list[str]:
-    """
-    Renders a grid of toggle buttons (chips). Clicking a chip toggles selection.
-    Mostra '✅' nos itens selecionados.
-    """
-    sel_key = f"{key_prefix}_selected"
-    if sel_key not in st.session_state:
-        st.session_state[sel_key] = set(default_selected or [])
-
-    # Cabeçalho + ações
-    c1, c2, c3 = st.columns([3, 1, 1])
-    with c1:
-        st.markdown(f"**{label}**  \nSelecionadas: **{len(st.session_state[sel_key])}**")
-    with c2:
-        if st.button("Selecionar tudo", key=f"{key_prefix}_all"):
-            st.session_state[sel_key] = set(options)
-    with c3:
-        if st.button("Limpar", key=f"{key_prefix}_clear"):
-            st.session_state[sel_key] = set()
-
-    # Render chips em linhas
-    rows = (len(options) + chips_per_row - 1) // chips_per_row
-    idx = 0
-    for _ in range(rows):
-        cols = st.columns(chips_per_row, gap="small")
-        for col in cols:
-            if idx >= len(options):
-                break
-            opt = options[idx]
-            idx += 1
-            selected = opt in st.session_state[sel_key]
-
-            btn_label = f"✅ {opt}" if selected else opt
-            if col.button(btn_label, key=f"{key_prefix}_{opt}"):
-                if selected:
-                    st.session_state[sel_key].discard(opt)
-                else:
-                    st.session_state[sel_key].add(opt)
-
-    return sorted(list(st.session_state[sel_key]))
 
 # =========================
 # Sidebar — Data & Filters
@@ -99,12 +49,13 @@ with st.sidebar:
     dfs = []
     for f in uploaded_files:
         df = pd.read_excel(f)
+        # keep the original file name as 'League' source tag (as in the original app)
         df["League"] = f.name
         dfs.append(df)
 
     data = pd.concat(dfs, ignore_index=True)
 
-    # Normalizar posições
+    # Normalize Position strings to list-like for filtering
     if "Position" in data.columns:
         pos_series = (
             data["Position"]
@@ -122,10 +73,10 @@ with st.sidebar:
     st.divider()
     st.header("2) Filters")
 
-    # Filtro de minutos
+    # Minutes filter
     minute_cols = [c for c in data.columns if "min" in c.lower() or "minutes" in c.lower()]
     if minute_cols:
-        minute_col = st.selectbox("Minutes column", minute_cols)
+        minute_col = st.selectbox("Minutes column", minute_cols, help="Filter players by minutes played.")
         min_minutes = st.slider(
             "Minimum minutes",
             min_value=0,
@@ -138,17 +89,18 @@ with st.sidebar:
         min_minutes = 0
         st.caption("No minutes column detected — minute filter disabled.")
 
-    # Filtro de idade
+    # Age filter
     if "Age" in data.columns:
         age_col = "Age"
+        # Clean numeric ages
         ages = pd.to_numeric(data[age_col], errors="coerce")
         if ages.notna().any():
             a_min, a_max = int(ages.min()), int(ages.max())
             age_range = st.slider("Age range", min_value=a_min, max_value=a_max, value=(a_min, a_max))
         else:
             age_col = None
-            age_range = None
             st.caption("Age column is not numeric — age filter disabled.")
+            age_range = None
     else:
         age_col = None
         age_range = None
@@ -159,6 +111,7 @@ with st.sidebar:
     color_by = st.selectbox(
         "Color points by",
         options=[c for c in ["League", "Team", "Position"] if c in data.columns] or ["League"],
+        help="Choose the grouping used for point color in the scatter plot.",
     )
     point_size = st.slider("Point size", 4, 16, 8)
     point_opacity = st.slider("Point opacity", 0.2, 1.0, 0.8)
@@ -173,16 +126,24 @@ with st.sidebar:
 # =========================
 # Main — Positions & Metrics
 # =========================
-st.header("Positions (click to select)")
+st.header("Positions")
 
 if all_positions:
-    selected_positions = chip_selector(
-        label="Click the positions you want to include",
-        options=all_positions,
-        key_prefix="poschips",
-        default_selected=[],
-        chips_per_row=10,
-    )
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        select_all_pos = st.checkbox("Selecionar todas", value=True, key="pos_select_all")
+    with c2:
+        default_pos = all_positions if select_all_pos else []
+        selected_positions = st.multiselect(
+            "Posições a incluir",
+            options=all_positions,
+            default=default_pos,
+            placeholder="Digite para buscar…",
+            key="pos_multiselect",
+        )
+    # Se 'Selecionar todas' estiver marcado, garante todas selecionadas mesmo que limpem o multiselect
+    if select_all_pos:
+        selected_positions = all_positions
 else:
     selected_positions = []
     st.warning("No 'Position' column found. Position filter not available.")
@@ -209,6 +170,7 @@ if not numeric_cols:
     st.error("No numeric columns found — please upload data with numeric metrics.")
     st.stop()
 
+# Try to exclude obvious ID-like columns from default proposal
 non_metric_hints = {"Age", "Height", "Weight", "Minutes", "Min", "Games"}
 default_metrics = [c for c in numeric_cols if c not in non_metric_hints] or numeric_cols
 
@@ -216,6 +178,7 @@ selected_metrics = st.multiselect(
     "Pick at least two numeric columns for PCA",
     options=numeric_cols,
     default=default_metrics[: min(6, len(default_metrics))],
+    help="Choose the variables used to compute PCA components.",
 )
 if len(selected_metrics) < 2:
     st.warning("Select at least two numeric columns to run PCA.")
@@ -226,20 +189,26 @@ if len(selected_metrics) < 2:
 # =========================
 df = data.copy()
 
+# Position filter
 if selected_positions and "Position" in df.columns:
     df = df[df["Position"].astype(str).apply(
         lambda s: any(p.strip() in s.split(",") for p in selected_positions)
     )]
 
+# Minutes filter
 if minute_col:
     df[minute_col] = pd.to_numeric(df[minute_col], errors="coerce")
     df = df[df[minute_col] >= min_minutes]
 
+# Age filter
 if age_col and age_range:
     df[age_col] = pd.to_numeric(df[age_col], errors="coerce")
     df = df[(df[age_col] >= age_range[0]) & (df[age_col] <= age_range[1])]
 
+# Keep only rows with all selected metrics present
 df_numeric = df.dropna(subset=selected_metrics).copy()
+
+# Add optional metadata columns to keep
 meta_cols = [c for c in ["Player", "Position", "League", "Team", "Age"] if c in df_numeric.columns]
 if df_numeric.empty:
     st.warning("No rows left after filters. Try relaxing filters or selecting different metrics.")
@@ -261,7 +230,7 @@ df_numeric["PCA2"] = coords[:, 1]
 exp1, exp2 = pca.explained_variance_ratio_[0], pca.explained_variance_ratio_[1]
 
 # =========================
-# Plot
+# Plotly figure
 # =========================
 st.header("PCA plot")
 fig = go.Figure()
@@ -269,6 +238,7 @@ fig = go.Figure()
 group_col = color_by if color_by in df_numeric.columns else "League"
 groups = sorted(df_numeric[group_col].astype(str).unique().tolist())
 
+# Color palette (10 base colors)
 base_colors = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
@@ -292,6 +262,7 @@ def hover_text(row):
     parts.append(f"PCA2: {row['PCA2']:.2f}")
     return "<br>".join(parts)
 
+# Normal + highlighted
 if player_col:
     df_numeric["_is_high"] = df_numeric[player_col].astype(str).isin(set(highlighted_players))
 else:
@@ -337,6 +308,7 @@ for g in groups:
                 )
             )
 
+# Loadings (vectors)
 if show_loadings:
     comps = pca.components_
     for i, metric in enumerate(selected_metrics):
@@ -378,6 +350,7 @@ if export_btn:
             mime="text/html",
         )
     else:
+        # Kaleido is required; try/except to inform gracefully
         try:
             img_bytes = fig.to_image(format="png", width=1400, height=900, scale=3)
             st.download_button(
@@ -387,7 +360,10 @@ if export_btn:
                 mime="image/png",
             )
         except Exception:
-            st.warning("PNG export requires the 'kaleido' package. Install with: `pip install kaleido`")
+            st.warning(
+                "PNG export requires the 'kaleido' package. Install with: `pip install kaleido` "
+                "and try again."
+            )
 
 # =========================
 # Footer
@@ -399,4 +375,6 @@ with st.expander("Data preview"):
         height=320,
     )
 
-st.caption("Tip: Use the chips above to quickly include/exclude positions, and the sidebar for filters and plot styling.")
+st.caption(
+    "Tip: Use the chips above to quickly include/exclude positions, and the sidebar for filters and plot styling."
+)
