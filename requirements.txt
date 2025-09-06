@@ -1,6 +1,7 @@
-scikit-learn
+streamlit
 pandas
 numpy
 plotly
-streamlit
+scikit-learn
 kaleido
+streamlit-plotly-events
