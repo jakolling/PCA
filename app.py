@@ -1,261 +1,289 @@
-
-# app_virtual_pitch.py
-# ------------------------------------------------------------
-# Virtual Pitch Position Selector — NO GROUPING
-# Each unique position token from the DataFrame is its own clickable label.
-# Background: mplsoccer Pitch; Foreground: Plotly scatter with click-to-toggle.
-# ------------------------------------------------------------
-import io
-import math
-from typing import Dict, List, Tuple
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
-
-# Optional: click capture
-try:
-    from streamlit_plotly_events import plotly_events
-    _HAS_SPE = True
-except Exception:
-    _HAS_SPE = False
-
-from mplsoccer import Pitch
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from io import BytesIO
+import base64
 from PIL import Image
+import io
+import plotly.io as pio
 
-st.set_page_config(page_title="Virtual Pitch Position Selector", layout="wide")
+st.set_page_config(page_title="PCA Analysis App", layout="wide")
 
-# ---------------------
-# Helpers
-# ---------------------
-def tokens_from_series(series: pd.Series) -> List[str]:
-    toks = []
-    for cell in series.dropna().astype(str):
-        for tok in str(cell).split(","):
-            tok = tok.strip()
-            if tok:
-                toks.append(tok)  # DO NOT normalize; exact label
-    # unique preserving order
-    seen = set()
-    uniq = []
-    for t in toks:
-        if t not in seen:
-            seen.add(t)
-            uniq.append(t)
-    return uniq
-
-def default_coordinates_for_labels(labels: List[str], pitch_length: int = 120, pitch_width: int = 80) -> Dict[str, Tuple[float, float]]:
-    """Assign coordinates PER EXACT LABEL. Known exact labels get canonical coords.
-    Unknown labels are placed on a shelf at the bottom, spaced evenly.
-    """
-    # Known exact labels (no aliasing). Only if the label matches exactly, it gets the coord.
-    # 4-3-3 base, but labels are distinct.
-    known: Dict[str, Tuple[float, float]] = {
-        # GK
-        "GK": (6, pitch_width/2),
-        # Back four
-        "RB": (20, pitch_width*0.25),
-        "RCB": (18, pitch_width*0.45),
-        "CB": (18, pitch_width/2),
-        "LCB": (18, pitch_width*0.55),
-        "LB": (20, pitch_width*0.75),
-        # Wing-backs
-        "RWB": (28, pitch_width*0.28),
-        "LWB": (28, pitch_width*0.72),
-        # Midfield (single pivot / double / triple)
-        "DM": (38, pitch_width/2),
-        "CDM": (38, pitch_width/2),
-        "RDM": (38, pitch_width*0.44),
-        "LDM": (38, pitch_width*0.56),
-        "CM": (52, pitch_width/2),
-        "RCM": (52, pitch_width*0.44),
-        "LCM": (52, pitch_width*0.56),
-        "AM": (66, pitch_width/2),
-        "CAM": (66, pitch_width/2),
-        "RAM": (66, pitch_width*0.44),
-        "LAM": (66, pitch_width*0.56),
-        # Wingers / wide mids
-        "RW": (78, pitch_width*0.30),
-        "LW": (78, pitch_width*0.70),
-        "RM": (70, pitch_width*0.33),
-        "LM": (70, pitch_width*0.67),
-        # Forwards
-        "RF": (92, pitch_width*0.45),
-        "LF": (92, pitch_width*0.55),
-        "SS": (88, pitch_width/2),
-        "CF": (100, pitch_width/2),
-        "ST": (100, pitch_width/2),
-        # Full list can be extended. Only exact matches are used.
-    }
-
-    coords: Dict[str, Tuple[float, float]] = {}
-    shelf = [lbl for lbl in labels if lbl not in known]
-    # Space unknowns across the bottom stripe (y ~ 6)
-    if shelf:
-        xs = np.linspace(8, pitch_length-8, num=len(shelf))
-        y = np.full(len(shelf), 6.0)
-        for i, lbl in enumerate(shelf):
-            coords[lbl] = (float(xs[i]), float(y[i]))
-
-    # Add known exact ones that are present
-    for lbl in labels:
-        if lbl in known:
-            coords[lbl] = known[lbl]
-
-    return coords
-
-def render_pitch_bg(pitch_type: str = "statsbomb", line_zorder: int = 2, pitch_length: int = 120, pitch_width: int = 80) -> Image.Image:
-    """Draw an mplsoccer Pitch to a PIL image buffer to use as Plotly background."""
-    pitch = Pitch(pitch_type=pitch_type, pitch_color="white", line_color="black",
-                  line_zorder=line_zorder, goal_type="box", pitch_length=pitch_length, pitch_width=pitch_width)
-    fig, ax = pitch.draw(figsize=(10, 6.666), tight_layout=True)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white")
-    buf.seek(0)
-    img = Image.open(buf).convert("RGBA")
-    return img
-
-def ensure_session_state(keys_defaults: Dict[str, object]):
-    for k, v in keys_defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-def toggle_selection_by_label(label: str):
-    sel = set(st.session_state["selected_labels"])
-    if label in sel:
-        sel.remove(label)
-    else:
-        sel.add(label)
-    st.session_state["selected_labels"] = list(sel)
-
-# ---------------------
-# Sidebar — data + options
-# ---------------------
-st.sidebar.header("Dados")
-uploaded = st.sidebar.file_uploader("Envie seu arquivo (Excel/CSV)", type=["xlsx", "xls", "csv"])
-pos_col = st.sidebar.text_input("Nome da coluna de posições (exato)", value="Position")
-
-pitch_type = st.sidebar.selectbox("Pitch (mplsoccer)", ["statsbomb", "opta", "tracab", "wyscout", "uefa", "metricasports"], index=0)
-pitch_length = st.sidebar.number_input("Comprimento", value=120, step=1, min_value=90, max_value=130)
-pitch_width = st.sidebar.number_input("Largura", value=80, step=1, min_value=60, max_value=90)
-
-ensure_session_state({
-    "selected_labels": [],
-})
-
-# ---------------------
-# Load data
-# ---------------------
-df: pd.DataFrame | None = None
-if uploaded is not None:
+def install_kaleido():
+    import subprocess
+    import sys
     try:
-        if uploaded.name.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(uploaded)
-        else:
-            df = pd.read_csv(uploaded)
-    except Exception as e:
-        st.error(f"Erro ao ler arquivo: {e}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "kaleido"])
+        return True
+    except:
+        return False
 
-if df is None:
-    st.info("Envie um arquivo e indique a coluna de posições para começar.")
-    st.stop()
+def main():
+    st.title("⚽ PCA Analysis - Physical/Technical Metrics")
 
-if pos_col not in df.columns:
-    st.error(f"Coluna '{pos_col}' não encontrada. Colunas disponíveis: {list(df.columns)}")
-    st.stop()
+    st.markdown("""
+    Upload up to **10 XLS files**, filter by position, age range, minimum minutes played,
+    choose numeric columns for PCA, highlight players, and visualize the results.
+    """)
 
-labels = tokens_from_series(df[pos_col])
-if not labels:
-    st.warning("Não encontrei posições na coluna informada.")
-    st.stop()
-
-# ---------------------
-# Coordinates per EXACT label (no grouping)
-# ---------------------
-coords = default_coordinates_for_labels(labels, pitch_length=pitch_length, pitch_width=pitch_width)
-
-# ---------------------
-# Build Plotly figure over mplsoccer background
-# ---------------------
-bg = render_pitch_bg(pitch_type=pitch_type, pitch_length=pitch_length, pitch_width=pitch_width)
-w, h = bg.size
-
-fig = go.Figure()
-
-# Set background image
-fig.add_layout_image(
-    dict(
-        source=bg,
-        xref="x",
-        yref="y",
-        x=0,
-        y=pitch_width,
-        sizex=pitch_length,
-        sizey=pitch_width,
-        sizing="stretch",
-        layer="below",
-        opacity=1.0,
+    # 1️⃣ Upload XLS files
+    st.header("1️⃣ Upload XLS Files")
+    uploaded_files = st.file_uploader(
+        "Select up to 10 XLS/XLSX files",
+        type=["xls", "xlsx"],
+        accept_multiple_files=True
     )
-)
 
-# Scatter labels
-xs = [coords[l][0] for l in labels]
-ys = [coords[l][1] for l in labels]
-texts = labels
-customdata = labels
+    if not uploaded_files:
+        st.info("👉 Please upload at least one XLS file to continue.")
+        st.stop()
 
-fig.add_trace(go.Scatter(
-    x=xs, y=ys, mode="markers+text",
-    text=texts, textposition="top center",
-    marker=dict(size=14, line=dict(width=1), opacity=0.9),
-    customdata=customdata,
-    hovertemplate="%{customdata}<extra></extra>",
-))
+    # Read files
+    dfs = []
+    for file in uploaded_files:
+        df = pd.read_excel(file)
+        df["League"] = file.name
+        dfs.append(df)
+        st.success(f"✅ File added: {file.name}")
 
-# Layout matching pitch coordinates
-fig.update_xaxes(range=[0, pitch_length], visible=False, constrain="domain")
-fig.update_yaxes(range=[0, pitch_width], visible=False, scaleanchor="x", scaleratio=1)
+    combined_df = pd.concat(dfs, ignore_index=True)
 
-fig.update_layout(
-    margin=dict(l=10, r=10, t=20, b=10),
-    dragmode=False,
-    height=650,
-)
+    # 2️⃣ Filter by Position
+    st.header("2️⃣ Filter by Position")
+    if "Position" in combined_df.columns:
+        all_positions = combined_df["Position"].dropna().str.split(',').explode().str.strip().unique().tolist()
+        positions = st.multiselect(
+            "Select one or more positions to include:",
+            options=sorted(all_positions)
+        )
+        if positions:
+            mask = combined_df["Position"].str.split(',').apply(
+                lambda x: any(pos.strip() in positions for pos in x) if isinstance(x, list) else False
+            )
+            combined_df = combined_df[mask]
+            st.success(f"{len(combined_df)} players found for selected positions.")
 
-st.subheader("Selecione posições clicando no campo (cada rótulo é independente)")
-col_plot, col_sel = st.columns([2.2, 1.0])
-
-with col_plot:
-    if _HAS_SPE:
-        clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key="pitch")
-        st.plotly_chart(fig, use_container_width=True)
-        if clicked:
-            # Each click returns pointNumber, curveNumber, etc.
-            # Retrieve the label using that index.
-            try:
-                idx = int(clicked[0].get("pointIndex", clicked[0].get("pointNumber", -1)))
-            except Exception:
-                idx = -1
-            if 0 <= idx < len(labels):
-                toggle_selection_by_label(labels[idx])
+    # 3️⃣ Filter by Age
+    st.header("3️⃣ Filter by Age Range")
+    if "Age" in combined_df.columns:
+        min_age = int(combined_df["Age"].min())
+        max_age = int(combined_df["Age"].max())
+        
+        age_range = st.slider(
+            "Select age range:",
+            min_value=min_age,
+            max_value=max_age,
+            value=(min_age, max_age)
+        )
+        combined_df = combined_df[
+            (combined_df["Age"] >= age_range[0]) & 
+            (combined_df["Age"] <= age_range[1])
+        ]
+        st.success(f"{len(combined_df)} players between ages {age_range[0]} and {age_range[1]}.")
     else:
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Dica: instale `streamlit-plotly-events` para habilitar clique. Fallback ao multiselect ao lado.")
+        st.warning("No 'Age' column found in the data. Age filter will be skipped.")
 
-with col_sel:
-    st.markdown("**Selecionadas**")
-    # Fallback multiselect also shown so user can adjust
-    current = st.session_state["selected_labels"]
-    new_sel = st.multiselect("",
-                             options=labels,
-                             default=current,
-                             key="msel_positions")
-    # Keep both in sync
-    st.session_state["selected_labels"] = new_sel
-    st.write(f"{len(new_sel)} posição(ões) selecionada(s).")
+    # 4️⃣ Filter by Minutes
+    st.header("4️⃣ Filter by Minimum Minutes Played")
+    minute_cols = [col for col in combined_df.columns if 'min' in col.lower() or 'minutes' in col.lower()]
+    if minute_cols:
+        minute_col = st.selectbox("Select column for minutes filter:", minute_cols)
+        min_minutes = st.slider(
+            f"Minimum minutes played ({minute_col}):",
+            min_value=0,
+            max_value=int(combined_df[minute_col].max()),
+            value=0,
+            step=50
+        )
+        combined_df = combined_df[combined_df[minute_col] >= min_minutes]
+        st.success(f"{len(combined_df)} players with at least {min_minutes} minutes.")
 
-# Expose selection for downstream use
-st.divider()
-st.markdown("### Resultado")
-st.json({"selected_positions": st.session_state["selected_labels"]})
+    # 5️⃣ Highlight Players
+    st.header("5️⃣ Highlight Players")
+    if "Player" in combined_df.columns:
+        player_names = combined_df["Player"].dropna().unique().tolist()
+        highlighted_players = st.multiselect(
+            "Select up to 5 players to highlight:",
+            options=player_names,
+            max_selections=5
+        )
+    else:
+        highlighted_players = []
+
+    # 6️⃣ Select Metrics
+    st.header("6️⃣ Select Metrics (Numeric Columns)")
+    numeric_cols = combined_df.select_dtypes(include=[np.number]).columns.tolist()
+    if not numeric_cols:
+        st.error("No numeric columns found in your data!")
+        st.stop()
+
+    selected_metrics = st.multiselect(
+        "Select at least 2 numeric columns for PCA:",
+        options=numeric_cols
+    )
+
+    if len(selected_metrics) < 2:
+        st.warning("Please select at least 2 numeric columns.")
+        st.stop()
+
+    # Modified section to handle missing columns
+    columns_to_keep = selected_metrics.copy()
+    required_cols = ["Player", "Position", "League", "Team"]
+    available_cols = [col for col in required_cols if col in combined_df.columns]
+    columns_to_keep.extend(available_cols)
+
+    if "Age" in combined_df.columns:
+        columns_to_keep.append("Age")
+
+    # Verify all columns exist before dropna
+    existing_cols = [col for col in columns_to_keep if col in combined_df.columns]
+    df_clean = combined_df.dropna(subset=existing_cols)
+
+    if df_clean.empty:
+        st.warning("No valid data left after filters.")
+        st.stop()
+
+    # 7️⃣ Run PCA
+    X = df_clean[selected_metrics].values
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(X_scaled)
+    df_clean["PCA1"] = coords[:, 0]
+    df_clean["PCA2"] = coords[:, 1]
+
+    # 8️⃣ Plot
+    st.header("7️⃣ PCA Plot")
+
+    fig = go.Figure()
+
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+    leagues = df_clean["League"].unique()
+    league_colors = {league: colors[i % len(colors)] for i, league in enumerate(leagues)}
+
+    for league, color in league_colors.items():
+        df_league = df_clean[df_clean["League"] == league]
+
+        normal_players = df_league[
+            ~df_league["Player"].isin(highlighted_players)
+        ] if "Player" in df_league.columns else df_league
+
+        highlighted = df_league[
+            df_league["Player"].isin(highlighted_players)
+        ] if "Player" in df_league.columns else pd.DataFrame()
+
+        if not normal_players.empty:
+            hover_text = normal_players.apply(lambda row: 
+                f"<b>{row['Player']}</b><br>" +
+                (f"Club: {row['Team']}<br>" if pd.notna(row.get('Team')) else "") +
+                (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
+                (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
+                f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
+                axis=1
+            )
+
+            fig.add_trace(go.Scatter(
+                x=normal_players["PCA1"],
+                y=normal_players["PCA2"],
+                mode="markers",
+                marker=dict(size=8, color=color, opacity=0.7),
+                name=league,
+                text=hover_text,
+                hoverinfo="text",
+                hovertemplate="%{text}<extra></extra>"
+            ))
+
+        if not highlighted.empty:
+            hover_text_highlighted = highlighted.apply(lambda row: 
+                f"<b>{row['Player']}</b><br>" +
+                (f"Club: {row['Team']}<br>" if pd.notna(row.get('Team')) else "") +
+                (f"Position: {row['Position']}<br>" if pd.notna(row.get('Position')) else "") +
+                (f"Age: {int(row['Age'])}<br>" if pd.notna(row.get('Age')) else "") +
+                f"PCA1: {row['PCA1']:.2f}<br>PCA2: {row['PCA2']:.2f}",
+                axis=1
+            )
+
+            for _, player_row in highlighted.iterrows():
+                fig.add_trace(go.Scatter(
+                    x=[player_row["PCA1"]],
+                    y=[player_row["PCA2"]],
+                    mode="markers+text",
+                    marker=dict(size=12, color=color, symbol="diamond", line=dict(width=2, color="black")),
+                    text=[player_row["Player"]],
+                    textposition="bottom center",
+                    name=player_row["Player"],
+                    hovertext=hover_text_highlighted,
+                    hoverinfo="text",
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    legendgroup="highlighted",
+                    showlegend=True
+                ))
+
+    # Add loadings (vectors)
+    for i, metric in enumerate(selected_metrics):
+        fig.add_trace(go.Scatter(
+            x=[0, pca.components_[0, i] * 3],
+            y=[0, pca.components_[1, i] * 3],
+            mode="lines+text",
+            line=dict(color="blue", width=2),
+            text=[None, metric],
+            textposition="top center",
+            showlegend=False
+        ))
+
+    fig.update_layout(
+        title="PCA Analysis",
+        xaxis_title="PCA 1",
+        yaxis_title="PCA 2",
+        width=1200,
+        height=800,
+        template="plotly_white"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.success("✅ PCA plot generated successfully!")
+
+    # 9️⃣ Export Results
+    st.header("8️⃣ Export Results")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Export to HTML
+        if st.button("Export to HTML"):
+            html = fig.to_html(full_html=True, include_plotlyjs='cdn')
+            st.download_button(
+                label="Download HTML",
+                data=html,
+                file_name="pca_analysis.html",
+                mime="text/html"
+            )
+    
+    with col2:
+        # Export to PNG with 300 DPI
+        if st.button("Export to PNG (300 DPI)"):
+            try:
+                # Try to export with Kaleido
+                img_bytes = fig.to_image(format="png", width=1200, height=800, scale=3)
+                st.download_button(
+                    label="Download PNG",
+                    data=img_bytes,
+                    file_name="pca_analysis.png",
+                    mime="image/png"
+                )
+            except:
+                st.warning("Kaleido package is required for PNG export. Installing now...")
+                if install_kaleido():
+                    st.success("Kaleido installed successfully! Please click the export button again.")
+                else:
+                    st.error("Failed to install Kaleido. Please install it manually with: pip install kaleido")
+
+if __name__ == "__main__":
+    main()
