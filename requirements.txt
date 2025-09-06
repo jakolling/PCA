@@ -1,8 +1,6 @@
-streamlit
-plotly
+scikit-learn
 pandas
 numpy
-pillow
-mplsoccer
-streamlit-plotly-events
-openpyxl
+plotly
+streamlit
+kaleido
