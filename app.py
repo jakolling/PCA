@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from streamlit_plotly_events import plotly_events
 
 # =========================
 # Page config & theming
@@ -22,68 +23,152 @@ st.set_page_config(
 )
 
 # =========================
-# Helper: chip-like selector
+# Helper: Football pitch position selector (clickable)
 # =========================
-def chip_selector(
+def pitch_selector(
     label: str,
     options: list[str],
     key_prefix: str,
     default_selected: list[str] | None = None,
-    chips_per_row: int = 8,
 ) -> list[str]:
     """
-    Renders a grid of toggle buttons (chips). Clicking a chip toggles selection.
-    Uses st.session_state to remember selections across reruns.
-    Returns the list of selected options.
+    Renderiza um campo de futebol com marcadores clicáveis nas posições.
+    Ao clicar, alterna seleção. Retorna lista de posições selecionadas.
+    Usa st.session_state para persistir.
     """
-    # Session state init
     sel_key = f"{key_prefix}_selected"
     if sel_key not in st.session_state:
         st.session_state[sel_key] = set(default_selected or [])
 
-    # Headline + actions
-    c1, c2, c3 = st.columns([3, 1, 1])
+    st.markdown(f"**{label}**")
+    c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"**{label}**")
-    with c2:
-        if st.button("Select all", key=f"{key_prefix}_all"):
+        if st.button("Selecionar tudo", key=f"{key_prefix}_all"):
             st.session_state[sel_key] = set(options)
-    with c3:
-        if st.button("Clear", key=f"{key_prefix}_clear"):
+    with c2:
+        if st.button("Limpar", key=f"{key_prefix}_clear"):
             st.session_state[sel_key] = set()
 
-    # Render chips in rows
-    rows = (len(options) + chips_per_row - 1) // chips_per_row
-    idx = 0
-    for _ in range(rows):
-        cols = st.columns(chips_per_row, gap="small")
-        for col in cols:
-            if idx >= len(options):
-                break
-            opt = options[idx]
-            idx += 1
-            selected = opt in st.session_state[sel_key]
-            style = (
-                "background-color:#0E1117;color:white;border:1px solid #475569;padding:6px 10px;"
-                "border-radius:999px;font-size:0.9rem;"
-            )
-            if selected:
-                style = (
-                    "background-color:#2563EB;color:white;border:1px solid #1D4ED8;"
-                    "padding:6px 10px;border-radius:999px;font-size:0.9rem;"
-                )
-            # Use HTML button with form-submit-like behavior via on_click callback
-            # Streamlit buttons rerun the script; emulate toggle by flipping state when clicked.
-            if col.button(opt, key=f"{key_prefix}_{opt}"):
-                if selected:
-                    st.session_state[sel_key].discard(opt)
-                else:
-                    st.session_state[sel_key].add(opt)
-            # Tiny style hint under each button for visual chip feel
-            col.markdown(
-                f"<div style='margin-top:-40px;visibility:hidden;{style}'>.</div>",
-                unsafe_allow_html=True,
-            )
+    # Dimensões do campo (escala 105 x 68)
+    WIDTH, HEIGHT = 105, 68
+
+    # Coordenadas sugeridas para posições "clássicas"
+    base_coords = {
+        "GK": (5, HEIGHT/2),
+        "RB": (25, HEIGHT*0.2),
+        "RWB": (30, HEIGHT*0.2),
+        "CB": (20, HEIGHT/2),
+        "RCB": (18, HEIGHT*0.35),
+        "LCB": (18, HEIGHT*0.65),
+        "LB": (25, HEIGHT*0.8),
+        "LWB": (30, HEIGHT*0.8),
+        "DM": (40, HEIGHT/2),
+        "RDM": (40, HEIGHT*0.38),
+        "LDM": (40, HEIGHT*0.62),
+        "CM": (52, HEIGHT/2),
+        "RCM": (52, HEIGHT*0.38),
+        "LCM": (52, HEIGHT*0.62),
+        "AM": (65, HEIGHT/2),
+        "RAM": (65, HEIGHT*0.38),
+        "LAM": (65, HEIGHT*0.62),
+        "RW": (75, HEIGHT*0.2),
+        "LW": (75, HEIGHT*0.8),
+        "RM": (60, HEIGHT*0.25),
+        "LM": (60, HEIGHT*0.75),
+        "CF": (88, HEIGHT/2),
+        "ST": (88, HEIGHT/2),
+        "RS": (85, HEIGHT*0.4),
+        "LS": (85, HEIGHT*0.6),
+    }
+
+    # Para opções que não estejam no dicionário, posiciona-as no meio-campo
+    unknowns = [p for p in options if p not in base_coords]
+    if unknowns:
+        y_vals = np.linspace(HEIGHT*0.25, HEIGHT*0.75, len(unknowns))
+        for i, pos in enumerate(unknowns):
+            base_coords[pos] = (52, float(y_vals[i]))
+
+    # Filtra só as posições presentes nas opções
+    coords = {p: base_coords[p] for p in options if p in base_coords}
+
+    # Cria o campo
+    fig = go.Figure()
+
+    # Gramado (retângulo)
+    fig.add_shape(type="rect", x0=0, y0=0, x1=WIDTH, y1=HEIGHT,
+                  line=dict(color="#2e7d32"), fillcolor="#3fa34d")
+    # Linha de meio-campo
+    fig.add_shape(type="line", x0=WIDTH/2, y0=0, x1=WIDTH/2, y1=HEIGHT,
+                  line=dict(color="white", width=2))
+    # Círculo central
+    fig.add_shape(type="circle",
+                  x0=WIDTH/2-9.15, y0=HEIGHT/2-9.15,
+                  x1=WIDTH/2+9.15, y1=HEIGHT/2+9.15,
+                  line=dict(color="white", width=2))
+    # Grandes áreas
+    fig.add_shape(type="rect", x0=0, y0=HEIGHT*0.2, x1=16.5, y1=HEIGHT*0.8,
+                  line=dict(color="white", width=2))
+    fig.add_shape(type="rect", x0=WIDTH-16.5, y0=HEIGHT*0.2, x1=WIDTH, y1=HEIGHT*0.8,
+                  line=dict(color="white", width=2))
+    # Pequenas áreas
+    fig.add_shape(type="rect", x0=0, y0=HEIGHT*0.35, x1=5.5, y1=HEIGHT*0.65,
+                  line=dict(color="white", width=2))
+    fig.add_shape(type="rect", x0=WIDTH-5.5, y0=HEIGHT*0.35, x1=WIDTH, y1=HEIGHT*0.65,
+                  line=dict(color="white", width=2))
+    # Pontos de pênalti
+    fig.add_trace(go.Scatter(x=[11], y=[HEIGHT/2], mode="markers",
+                             marker=dict(size=6, symbol="x"),
+                             showlegend=False, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=[WIDTH-11], y=[HEIGHT/2], mode="markers",
+                             marker=dict(size=6, symbol="x"),
+                             showlegend=False, hoverinfo="skip"))
+
+    # Marcadores das posições
+    xs, ys, texts, colors = [], [], [], []
+    for pos, (x, y) in coords.items():
+        xs.append(x); ys.append(y); texts.append(pos)
+        colors.append("#2563EB" if pos in st.session_state[sel_key] else "#0E1117")
+
+    fig.add_trace(
+        go.Scatter(
+            x=xs, y=ys, mode="markers+text",
+            marker=dict(size=20, color=colors, line=dict(color="white", width=1.5)),
+            text=texts, textposition="middle center",
+            hoverinfo="text", hovertemplate="<b>%{text}</b><extra></extra>",
+        )
+    )
+
+    fig.update_xaxes(visible=False, range=[-2, WIDTH+2])
+    fig.update_yaxes(visible=False, range=[-2, HEIGHT+2], scaleanchor="x", scaleratio=1)
+    fig.update_layout(
+        height=420, margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="#3fa34d",
+        paper_bgcolor=st.get_option("theme.backgroundColor") or "white",
+    )
+
+    # Captura clique
+    clicked = plotly_events(
+        fig,
+        click_event=True,
+        hover_event=False,
+        select_event=False,
+        key=f"{key_prefix}_events"
+    )
+    if clicked:
+        point = clicked[0]
+        idx = point.get("pointNumber")
+        pos_clicked = texts[idx] if idx is not None and 0 <= idx < len(texts) else None
+        if pos_clicked:
+            if pos_clicked in st.session_state[sel_key]:
+                st.session_state[sel_key].discard(pos_clicked)
+            else:
+                st.session_state[sel_key].add(pos_clicked)
+
+    st.caption(
+        "Selecionadas: " +
+        (", ".join(sorted(st.session_state[sel_key])) if st.session_state[sel_key] else "nenhuma")
+    )
+
     return sorted(list(st.session_state[sel_key]))
 
 # =========================
@@ -93,34 +178,35 @@ st.title("⚽ PCA Analysis — Physical & Technical Metrics")
 
 st.markdown(
     """
-This app helps you upload **up to 10 Excel files**, filter players, pick numeric metrics, and visualize a **2D PCA** with loadings vectors.  
-Use the sidebar to upload files and set filters, then see the plot and export options on the right.
+Este app permite enviar **até 10 arquivos Excel**, filtrar jogadores, escolher métricas numéricas
+e visualizar um **PCA 2D** com vetores de loadings.
+Use a barra lateral para carregar dados e ajustar filtros; o gráfico e exportações ficam à direita.
 """
 )
 
 with st.sidebar:
     st.header("1) Data upload")
     uploaded_files = st.file_uploader(
-        "Select up to 10 Excel files",
+        "Selecione até 10 arquivos Excel",
         type=["xls", "xlsx"],
         accept_multiple_files=True,
-        help="Each file should contain at least 'Player', 'Position', numeric columns, etc.",
+        help="Cada arquivo deve conter pelo menos 'Player', 'Position' e colunas numéricas.",
     )
 
     if not uploaded_files:
-        st.info("Upload at least one file to continue.")
+        st.info("Envie ao menos um arquivo para continuar.")
         st.stop()
 
     dfs = []
     for f in uploaded_files:
         df = pd.read_excel(f)
-        # keep the original file name as 'League' source tag (as in the original app)
+        # mantém o nome do arquivo como tag 'League'
         df["League"] = f.name
         dfs.append(df)
 
     data = pd.concat(dfs, ignore_index=True)
 
-    # Normalize Position strings to list-like for filtering
+    # Normaliza 'Position' para lista
     if "Position" in data.columns:
         pos_series = (
             data["Position"]
@@ -138,12 +224,12 @@ with st.sidebar:
     st.divider()
     st.header("2) Filters")
 
-    # Minutes filter
+    # Filtro de minutos
     minute_cols = [c for c in data.columns if "min" in c.lower() or "minutes" in c.lower()]
     if minute_cols:
-        minute_col = st.selectbox("Minutes column", minute_cols, help="Filter players by minutes played.")
+        minute_col = st.selectbox("Coluna de minutos", minute_cols, help="Filtra por minutos jogados.")
         min_minutes = st.slider(
-            "Minimum minutes",
+            "Mínimo de minutos",
             min_value=0,
             max_value=int(max(1, float(pd.to_numeric(data[minute_col], errors="coerce").fillna(0).max()))),
             value=0,
@@ -152,93 +238,91 @@ with st.sidebar:
     else:
         minute_col = None
         min_minutes = 0
-        st.caption("No minutes column detected — minute filter disabled.")
+        st.caption("Nenhuma coluna de minutos detectada — filtro desativado.")
 
-    # Age filter
+    # Filtro de idade
     if "Age" in data.columns:
         age_col = "Age"
-        # Clean numeric ages
         ages = pd.to_numeric(data[age_col], errors="coerce")
         if ages.notna().any():
             a_min, a_max = int(ages.min()), int(ages.max())
-            age_range = st.slider("Age range", min_value=a_min, max_value=a_max, value=(a_min, a_max))
+            age_range = st.slider("Faixa etária", min_value=a_min, max_value=a_max, value=(a_min, a_max))
         else:
             age_col = None
-            st.caption("Age column is not numeric — age filter disabled.")
+            st.caption("Coluna de idade não numérica — filtro desativado.")
             age_range = None
     else:
         age_col = None
         age_range = None
-        st.caption("No 'Age' column — age filter disabled.")
+        st.caption("Sem coluna 'Age' — filtro desativado.")
 
     st.divider()
     st.header("3) Plot options")
     color_by = st.selectbox(
-        "Color points by",
+        "Colorir pontos por",
         options=[c for c in ["League", "Team", "Position"] if c in data.columns] or ["League"],
-        help="Choose the grouping used for point color in the scatter plot.",
+        help="Agrupamento usado para cores dos pontos.",
     )
-    point_size = st.slider("Point size", 4, 16, 8)
-    point_opacity = st.slider("Point opacity", 0.2, 1.0, 0.8)
-    show_loadings = st.toggle("Show loadings (metric vectors)", value=True)
-    loadings_scale = st.slider("Loadings length", 1.0, 5.0, 3.0, 0.5)
+    point_size = st.slider("Tamanho do ponto", 4, 16, 8)
+    point_opacity = st.slider("Opacidade do ponto", 0.2, 1.0, 0.8)
+    show_loadings = st.toggle("Mostrar loadings (vetores de métricas)", value=True)
+    loadings_scale = st.slider("Comprimento dos loadings", 1.0, 5.0, 3.0, 0.5)
 
     st.divider()
     st.header("4) Export")
-    export_format = st.radio("Format", ["HTML", "PNG (300 DPI)"], horizontal=True)
-    export_btn = st.button("Export plot")
+    export_format = st.radio("Formato", ["HTML", "PNG (300 DPI)"], horizontal=True)
+    export_btn = st.button("Exportar gráfico")
 
 # =========================
 # Main — Positions & Metrics
 # =========================
-st.header("Positions (click to select)")
+st.header("Posições (clique no campo)")
 
 if all_positions:
-    selected_positions = chip_selector(
-        label="Click the positions you want to include",
+    selected_positions = pitch_selector(
+        label="Clique no campo para (de)selecionar posições",
         options=all_positions,
-        key_prefix="poschips",
+        key_prefix="pitch",
         default_selected=[],
-        chips_per_row=10,
     )
 else:
     selected_positions = []
-    st.warning("No 'Position' column found. Position filter not available.")
+    st.warning("Nenhuma coluna 'Position' encontrada. Filtro por posição indisponível.")
 
-# Highlight players
-st.subheader("Highlight players (optional)")
+# Destaque de jogadores
+st.subheader("Destacar jogadores (opcional)")
 player_col = "Player" if "Player" in data.columns else None
 if player_col:
     player_options = sorted(pd.Series(data[player_col].astype(str)).unique().tolist())
     highlighted_players = st.multiselect(
-        "Select up to 5 players to label in the plot",
+        "Selecione até 5 jogadores para rotular no gráfico",
         options=player_options,
         max_selections=5,
-        placeholder="Type a name…",
+        placeholder="Digite um nome…",
     )
 else:
     highlighted_players = []
-    st.caption("No 'Player' column — highlight disabled.")
+    st.caption("Sem coluna 'Player' — destaque desativado.")
 
-# Numeric metric selection
-st.header("Metrics selection")
+# Seleção de métricas numéricas
+st.header("Seleção de métricas")
 numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
 if not numeric_cols:
-    st.error("No numeric columns found — please upload data with numeric metrics.")
+    st.error("Nenhuma coluna numérica encontrada — envie dados com métricas numéricas.")
     st.stop()
 
-# Try to exclude obvious ID-like columns from default proposal
+# Exclui colunas possivelmente não-métricas do default
 non_metric_hints = {"Age", "Height", "Weight", "Minutes", "Min", "Games"}
 default_metrics = [c for c in numeric_cols if c not in non_metric_hints] or numeric_cols
 
 selected_metrics = st.multiselect(
-    "Pick at least two numeric columns for PCA",
+    "Escolha pelo menos duas colunas numéricas para o PCA",
     options=numeric_cols,
     default=default_metrics[: min(6, len(default_metrics))],
-    help="Choose the variables used to compute PCA components.",
+    help="Variáveis usadas para calcular os componentes do PCA.",
 )
 if len(selected_metrics) < 2:
-    st.warning("Select at least two numeric columns to run PCA.")
+    st.warning("Selecione pelo menos duas colunas para executar o PCA.")
     st.stop()
 
 # =========================
@@ -246,29 +330,29 @@ if len(selected_metrics) < 2:
 # =========================
 df = data.copy()
 
-# Position filter
+# Filtro por posição
 if selected_positions and "Position" in df.columns:
     df = df[df["Position"].astype(str).apply(
         lambda s: any(p.strip() in s.split(",") for p in selected_positions)
     )]
 
-# Minutes filter
+# Filtro por minutos
 if minute_col:
     df[minute_col] = pd.to_numeric(df[minute_col], errors="coerce")
     df = df[df[minute_col] >= min_minutes]
 
-# Age filter
+# Filtro por idade
 if age_col and age_range:
     df[age_col] = pd.to_numeric(df[age_col], errors="coerce")
     df = df[(df[age_col] >= age_range[0]) & (df[age_col] <= age_range[1])]
 
-# Keep only rows with all selected metrics present
+# Mantém apenas linhas com todas as métricas selecionadas
 df_numeric = df.dropna(subset=selected_metrics).copy()
 
-# Add optional metadata columns to keep
+# Colunas de metadados opcionais
 meta_cols = [c for c in ["Player", "Position", "League", "Team", "Age"] if c in df_numeric.columns]
 if df_numeric.empty:
-    st.warning("No rows left after filters. Try relaxing filters or selecting different metrics.")
+    st.warning("Nenhuma linha restante após os filtros. Afrouxe os filtros ou escolha outras métricas.")
     st.stop()
 
 # =========================
@@ -295,7 +379,7 @@ fig = go.Figure()
 group_col = color_by if color_by in df_numeric.columns else "League"
 groups = sorted(df_numeric[group_col].astype(str).unique().tolist())
 
-# Color palette (10 base colors)
+# Paleta de 10 cores base
 base_colors = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
@@ -319,7 +403,7 @@ def hover_text(row):
     parts.append(f"PCA2: {row['PCA2']:.2f}")
     return "<br>".join(parts)
 
-# Normal + highlighted
+# Normal + destacados
 if player_col:
     df_numeric["_is_high"] = df_numeric[player_col].astype(str).isin(set(highlighted_players))
 else:
@@ -365,7 +449,7 @@ for g in groups:
                 )
             )
 
-# Loadings (vectors)
+# Loadings (vetores)
 if show_loadings:
     comps = pca.components_
     for i, metric in enumerate(selected_metrics):
@@ -392,7 +476,7 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
-st.success("PCA computed and plotted successfully.")
+st.success("PCA calculado e plotado com sucesso.")
 
 # =========================
 # Export
@@ -407,7 +491,7 @@ if export_btn:
             mime="text/html",
         )
     else:
-        # Kaleido is required; try/except to inform gracefully
+        # PNG exige Kaleido
         try:
             img_bytes = fig.to_image(format="png", width=1400, height=900, scale=3)
             st.download_button(
@@ -418,8 +502,7 @@ if export_btn:
             )
         except Exception:
             st.warning(
-                "PNG export requires the 'kaleido' package. Install with: `pip install kaleido` "
-                "and try again."
+                "A exportação em PNG requer o pacote 'kaleido'. Instale com: `pip install kaleido`."
             )
 
 # =========================
@@ -433,5 +516,5 @@ with st.expander("Data preview"):
     )
 
 st.caption(
-    "Tip: Use the chips above to quickly include/exclude positions, and the sidebar for filters and plot styling."
+    "Dica: use o mini-campo para filtrar posições e a barra lateral para filtros e estilo do gráfico."
 )
