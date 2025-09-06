@@ -5,3 +5,4 @@ numpy
 pillow
 mplsoccer
 streamlit-plotly-events
+openpyxl
